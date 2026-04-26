@@ -24,6 +24,12 @@ interface AppDao {
     @Update
     suspend fun updateCourse(course: Course)
 
+    @Query("SELECT * FROM classrooms")
+    fun getAllClassrooms(): Flow<List<Classroom>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertClassrooms(classrooms: List<Classroom>)
+
     @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC")
     fun getAllAuditLogs(): Flow<List<AuditLog>>
 
@@ -41,9 +47,12 @@ interface AppDao {
 
     @Query("DELETE FROM audit_logs")
     suspend fun clearAuditLogs()
+
+    @Query("DELETE FROM classrooms")
+    suspend fun clearClassrooms()
 }
 
-@Database(entities = [Lecturer::class, Course::class, AuditLog::class], version = 2, exportSchema = false)
+@Database(entities = [Lecturer::class, Course::class, AuditLog::class, Classroom::class], version = 3, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun appDao(): AppDao

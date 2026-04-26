@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "289792164341",
+    "project_id": "university-schedule-system",
+    "storage_bucket": "university-schedule-system.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:289792164341:android:6d620d930c26c383dae0bc",
+        "android_client_info": {
+          "package_name": "com.example.universityschedulesystem"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB8D3COFgPa3L4HYd1iZUuuy5CPXWRQPAQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

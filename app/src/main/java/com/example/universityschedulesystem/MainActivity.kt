@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -32,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -64,7 +66,7 @@ class MainActivity : ComponentActivity() {
 enum class AppDestinations(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     CALENDAR("Calendar", Icons.Default.DateRange),
-    DATA("Data", Icons.Default.List),
+    DATA("Data", Icons.AutoMirrored.Filled.List),
     SETTINGS("Settings", Icons.Default.Settings),
 }
 
@@ -73,38 +75,48 @@ enum class AppDestinations(val label: String, val icon: ImageVector) {
 fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
     var currentDestination by remember { mutableStateOf(AppDestinations.HOME) }
     val userSettings = viewModel.userSettings
+    val loggedInLecturer = viewModel.loggedInLecturer
 
-    NavigationSuiteScaffold(
-        navigationSuiteItems = {
-            AppDestinations.entries.forEach { destination ->
-                val isVisible = if (userSettings.position == Position.LECTURER) {
-                    destination == AppDestinations.HOME || destination == AppDestinations.CALENDAR
-                } else true
+    if (!userSettings.isRegistered) {
+        LoginScreen(viewModel, dao)
+    } else if (loggedInLecturer?.must_change_password == true) {
+        PasswordChangeScreen(
+            onPasswordChanged = { current, new ->
+                viewModel.changePasswordWithVerification(current, new)
+            },
+            onLogout = { viewModel.logout() }
+        )
+    } else {
+        NavigationSuiteScaffold(
+            navigationSuiteItems = {
+                AppDestinations.entries.forEach { destination ->
+                    val isVisible = if (userSettings.position == Position.LECTURER) {
+                        destination == AppDestinations.HOME || destination == AppDestinations.CALENDAR
+                    } else true
 
-                if (isVisible) {
-                    item(
-                        icon = { Icon(destination.icon, contentDescription = destination.label) },
-                        label = { Text(destination.label) },
-                        selected = destination == currentDestination,
-                        onClick = { currentDestination = destination }
-                    )
+                    if (isVisible) {
+                        item(
+                            icon = { Icon(destination.icon, contentDescription = destination.label) },
+                            label = { Text(destination.label) },
+                            selected = destination == currentDestination,
+                            onClick = { currentDestination = destination }
+                        )
+                    }
                 }
             }
-        }
-    ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                CenterAlignedTopAppBar(
-                    title = {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.School, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(Modifier.width(8.dp))
-                            Text("University Scheduler", fontWeight = FontWeight.Bold)
-                        }
-                    },
-                    actions = {
-                        if (userSettings.isRegistered) {
+        ) {
+            Scaffold(
+                modifier = Modifier.fillMaxSize(),
+                topBar = {
+                    CenterAlignedTopAppBar(
+                        title = {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.School, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(8.dp))
+                                Text("University Scheduler", fontWeight = FontWeight.Bold)
+                            }
+                        },
+                        actions = {
                             IconButton(onClick = {
                                 viewModel.logout()
                                 currentDestination = AppDestinations.HOME
@@ -112,22 +124,22 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
                                 Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout")
                             }
                         }
-                    }
-                )
-            }
-        ) { innerPadding ->
-            Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-                when (currentDestination) {
-                    AppDestinations.HOME -> HomeScreen(viewModel, dao, onNavigateToSettings = { currentDestination = AppDestinations.SETTINGS })
-                    AppDestinations.CALENDAR -> CalendarScreen(viewModel)
-                    AppDestinations.DATA -> DataScreen(viewModel, onGoToCalendar = { currentDestination = AppDestinations.CALENDAR })
-                    AppDestinations.SETTINGS -> SettingsScreen(
-                        userSettings = userSettings,
-                        onSave = {
-                            viewModel.userSettings = it
-                            currentDestination = AppDestinations.HOME
-                        }
                     )
+                }
+            ) { innerPadding ->
+                Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
+                    when (currentDestination) {
+                        AppDestinations.HOME -> HomeScreen(viewModel)
+                        AppDestinations.CALENDAR -> CalendarScreen(viewModel)
+                        AppDestinations.DATA -> DataScreen(viewModel, onGoToCalendar = { currentDestination = AppDestinations.CALENDAR })
+                        AppDestinations.SETTINGS -> SettingsScreen(
+                            userSettings = userSettings,
+                            onSave = {
+                                viewModel.userSettings = it
+                                currentDestination = AppDestinations.HOME
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -135,49 +147,164 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
 }
 
 @Composable
-fun HomeScreen(viewModel: CourseViewModel, dao: AppDao, onNavigateToSettings: () -> Unit) {
-    val userSettings = viewModel.userSettings
+fun LoginScreen(viewModel: CourseViewModel, dao: AppDao) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    val gradient = Brush.verticalGradient(colors = listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
+
+    Box(modifier = Modifier.fillMaxSize().background(gradient), contentAlignment = Alignment.Center) {
+        Card(
+            modifier = Modifier.fillMaxWidth().padding(32.dp),
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+        ) {
+            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(Icons.Default.School, null, Modifier.size(64.dp), MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(8.dp))
+                Text("University Scheduler", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Please login to continue", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                
+                Spacer(Modifier.height(24.dp))
+                
+                OutlinedTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    label = { Text("Username") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    leadingIcon = { Icon(Icons.Default.Person, null) }
+                )
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Password") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    leadingIcon = { Icon(Icons.Default.Lock, null) }
+                )
+                
+                Spacer(Modifier.height(24.dp))
+                
+                Button(
+                    onClick = {
+                        scope.launch {
+                            if (!viewModel.login(username, password, dao)) {
+                                Toast.makeText(context, "Invalid Credentials", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text("Login")
+                }
+                
+                Spacer(Modifier.height(16.dp))
+                
+                TextButton(onClick = { 
+                    viewModel.userSettings = UserSettings(position = Position.ADMIN, isRegistered = true, name = "Admin")
+                }) {
+                    Text("Continue as Administrator")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PasswordChangeScreen(onPasswordChanged: (String, String) -> Unit, onLogout: () -> Unit) {
+    var currentPassword by remember { mutableStateOf("") }
+    var newPassword by remember { mutableStateOf("") }
+    var confirmPassword by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Default.LockReset, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(16.dp))
+        Text("Password Change Required", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text("For security, you must change your password before proceeding.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
+        
+        Spacer(Modifier.height(32.dp))
+        
+        OutlinedTextField(
+            value = currentPassword,
+            onValueChange = { currentPassword = it },
+            label = { Text("Current Password") },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation()
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = newPassword,
+            onValueChange = { newPassword = it },
+            label = { Text("New Password") },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation()
+        )
+        Spacer(Modifier.height(16.dp))
+        OutlinedTextField(
+            value = confirmPassword,
+            onValueChange = { confirmPassword = it },
+            label = { Text("Confirm New Password") },
+            modifier = Modifier.fillMaxWidth(),
+            visualTransformation = PasswordVisualTransformation()
+        )
+        
+        Spacer(Modifier.height(32.dp))
+        
+        Button(
+            onClick = {
+                if (newPassword != confirmPassword) {
+                    Toast.makeText(context, "New passwords do not match", Toast.LENGTH_SHORT).show()
+                } else if (newPassword.length < 4) {
+                    Toast.makeText(context, "Password must be at least 4 characters", Toast.LENGTH_SHORT).show()
+                } else {
+                    onPasswordChanged(currentPassword, newPassword)
+                }
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Save & Continue")
+        }
+        
+        Spacer(Modifier.height(8.dp))
+        
+        TextButton(onClick = onLogout) {
+            Text("Cancel and Logout")
+        }
+    }
+}
+
+@Composable
+fun HomeScreen(viewModel: CourseViewModel) {
+    val userSettings = viewModel.userSettings
     val gradient = Brush.verticalGradient(colors = listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
 
     Column(modifier = Modifier.fillMaxSize().background(gradient).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        if (userSettings.isRegistered) {
-            ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
-                Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(if (userSettings.position == Position.ADMIN) Icons.Default.AdminPanelSettings else Icons.Default.School, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(16.dp))
-                    Text("Welcome back,", style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-                    val displayName = if (userSettings.position == Position.ADMIN) {
-                        if (userSettings.name.isNotBlank()) "${userSettings.name} ${userSettings.surname}" else "Administrator"
-                    } else "${userSettings.name} ${userSettings.surname}"
-                    
-                    Text(
-                        text = displayName,
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text("Department: ${userSettings.department?.displayName ?: "N/A"}", style = MaterialTheme.typography.bodyMedium, textAlign = TextAlign.Center)
-                }
-            }
-        } else {
-            Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))) {
-                Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Default.School, null, Modifier.size(64.dp), MaterialTheme.colorScheme.primary)
-                    Text("Lecturer Login", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                    var username by remember { mutableStateOf("") }
-                    var password by remember { mutableStateOf("") }
-                    Spacer(Modifier.height(16.dp))
-                    OutlinedTextField(value = username, onValueChange = { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Password") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    Spacer(Modifier.height(24.dp))
-                    Button(onClick = { scope.launch { if (!viewModel.login(username, password, dao)) Toast.makeText(context, "Invalid Credentials", Toast.LENGTH_SHORT).show() } }, modifier = Modifier.fillMaxWidth()) { Text("Login") }
-                    Spacer(Modifier.height(16.dp))
-                    OutlinedButton(onClick = { viewModel.userSettings = UserSettings(position = Position.ADMIN); onNavigateToSettings() }, modifier = Modifier.fillMaxWidth()) { Text("Continue as Administrator") }
+        ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+            Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Icon(if (userSettings.position == Position.ADMIN) Icons.Default.AdminPanelSettings else Icons.Default.School, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(16.dp))
+                Text("Welcome,", style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+                Text(
+                    text = if (userSettings.name.isNotBlank()) "${userSettings.name} ${userSettings.surname}" else "User",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("Role: ${userSettings.position?.displayName}", style = MaterialTheme.typography.bodyMedium)
+                if (userSettings.department != null) {
+                    Text("Department: ${userSettings.department.displayName}", style = MaterialTheme.typography.bodyMedium)
                 }
             }
         }
@@ -203,14 +330,19 @@ fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
         uri?.let { viewModel.writeExcelTemplate(context, it) }
     }
 
-    LaunchedEffect(importStatus) { if (importStatus is UiState.Success) { Toast.makeText(context, (importStatus as UiState.Success).data, Toast.LENGTH_SHORT).show(); viewModel.resetImportStatus() } }
+    LaunchedEffect(importStatus) { 
+        if (importStatus is UiState.Success) { 
+            Toast.makeText(context, (importStatus as UiState.Success).data, Toast.LENGTH_SHORT).show()
+            viewModel.resetImportStatus() 
+        } 
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(if (showLogs) "Audit Logs" else "Data Management", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
             if (viewModel.userSettings.position == Position.ADMIN) {
                 IconButton(onClick = { showClearConfirm = true }) { Icon(Icons.Default.DeleteSweep, "Clear", tint = MaterialTheme.colorScheme.error) }
-                IconButton(onClick = { showLogs = !showLogs }) { Icon(if (showLogs) Icons.Default.List else Icons.Default.History, "Logs") }
+                IconButton(onClick = { showLogs = !showLogs }) { Icon(if (showLogs) Icons.AutoMirrored.Filled.List else Icons.Default.History, "Logs") }
                 IconButton(onClick = { templateLauncher.launch("University_Template.xlsx") }) { Icon(Icons.Default.Download, "Template") }
                 IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.Add, "Import") }
             }
@@ -266,8 +398,10 @@ fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
         val lecturerCourses = courses.filter { it.lecturerName.contains(lecturer.name) }
         AlertDialog(onDismissRequest = { selectedLecturerDetails = null }, title = { Text(lecturer.name) }, text = {
             Column {
-                Text("Username: ${lecturer.username}"); Text("Password: ${lecturer.password}")
-                Spacer(Modifier.height(8.dp)); Text("Courses:", fontWeight = FontWeight.Bold)
+                Text("Username: ${lecturer.username}")
+                Text("Password: ${lecturer.password}")
+                Spacer(Modifier.height(8.dp))
+                Text("Courses:", fontWeight = FontWeight.Bold)
                 lecturerCourses.forEach { Text("- ${it.code}: ${it.name}") }
             }
         }, confirmButton = { TextButton(onClick = { selectedLecturerDetails = null }) { Text("Close") } })
@@ -280,7 +414,14 @@ fun CalendarScreen(viewModel: CourseViewModel) {
     val hours = (8..17).map { "$it:00" }
     val lecturersState by viewModel.uiState.collectAsStateWithLifecycle()
     val courses by viewModel.coursesState.collectAsStateWithLifecycle()
-    val selectedLecturer = viewModel.selectedLecturerForCalendar ?: viewModel.loggedInLecturer
+    
+    val currentLoggedInLecturer = viewModel.loggedInLecturer
+    val selectedLecturer = if (viewModel.userSettings.position == Position.ADMIN) {
+        viewModel.selectedLecturerForCalendar
+    } else {
+        currentLoggedInLecturer
+    }
+    
     var selectedSlots by remember { mutableStateOf(setOf<Pair<String, String>>()) }
     var showAssignDialog by remember { mutableStateOf(false) }
 
@@ -313,20 +454,34 @@ fun CalendarScreen(viewModel: CourseViewModel) {
                     Column {
                         Box(Modifier.height(40.dp).width(120.dp), Alignment.Center) { Text(day, fontWeight = FontWeight.Bold) }
                         hours.forEach { hour ->
-                            val isAvailable = selectedLecturer.availability.find { it.day == day && it.timeSlot == hour }?.isAvailable ?: true
+                            val availability = selectedLecturer.availability.find { it.day == day && it.timeSlot == hour }
+                            val isAvailable = availability?.isAvailable ?: true
+                            
                             val assignedCourse = courses.find { it.lecturerName.contains(selectedLecturer.name) && it.scheduledSlots.any { s -> s.day == day && s.timeSlot == hour } }
                             val isSelected = selectedSlots.contains(day to hour)
 
                             Box(
                                 modifier = Modifier.height(60.dp).width(120.dp).padding(2.dp).clip(RoundedCornerShape(4.dp))
-                                    .background(if (assignedCourse != null) MaterialTheme.colorScheme.primaryContainer else if (isSelected) MaterialTheme.colorScheme.secondaryContainer else if (isAvailable) Color(0xFFC8E6C9) else Color(0xFFFFCDD2))
+                                    .background(
+                                        when {
+                                            assignedCourse != null -> MaterialTheme.colorScheme.primaryContainer
+                                            isSelected -> MaterialTheme.colorScheme.secondaryContainer
+                                            !isAvailable -> Color(0xFFFFCDD2) // Red for unavailable
+                                            else -> Color(0xFFC8E6C9) // Green for available
+                                        }
+                                    )
                                     .border(1.dp, Color.Gray.copy(alpha = 0.2f))
                                     .clickable {
-                                        if (viewModel.userSettings.position == Position.LECTURER && viewModel.loggedInLecturer?.id == selectedLecturer.id) {
-                                            val current = selectedLecturer.availability.toMutableList()
-                                            val idx = current.indexOfFirst { it.day == day && it.timeSlot == hour }
-                                            if (idx != -1) current[idx] = current[idx].copy(isAvailable = !isAvailable) else current.add(AvailabilitySlot(day, hour, !isAvailable))
-                                            viewModel.updateLecturerAvailability(selectedLecturer, current)
+                                        if (viewModel.userSettings.position == Position.LECTURER && currentLoggedInLecturer?.id == selectedLecturer.id) {
+                                            val currentAvailability = selectedLecturer.availability.toMutableList()
+                                            val existingIndex = currentAvailability.indexOfFirst { it.day == day && it.timeSlot == hour }
+                                            
+                                            if (existingIndex != -1) {
+                                                currentAvailability[existingIndex] = currentAvailability[existingIndex].copy(isAvailable = !isAvailable)
+                                            } else {
+                                                currentAvailability.add(AvailabilitySlot(day, hour, false))
+                                            }
+                                            viewModel.updateLecturerAvailability(selectedLecturer, currentAvailability)
                                         } else if (viewModel.userSettings.position == Position.ADMIN && assignedCourse == null) {
                                             selectedSlots = if (isSelected) selectedSlots - (day to hour) else selectedSlots + (day to hour)
                                         }
@@ -336,7 +491,11 @@ fun CalendarScreen(viewModel: CourseViewModel) {
                                 if (assignedCourse != null) {
                                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                         Text(assignedCourse.code, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                        if (viewModel.userSettings.position == Position.ADMIN) { IconButton(onClick = { viewModel.removeCourseAssignment(assignedCourse.id) }, Modifier.size(20.dp)) { Icon(Icons.Default.Delete, null, tint = Color.Red) } }
+                                        if (viewModel.userSettings.position == Position.ADMIN) { 
+                                            IconButton(onClick = { viewModel.removeCourseAssignment(assignedCourse.id) }, Modifier.size(20.dp)) { 
+                                                Icon(Icons.Default.Delete, null, tint = Color.Red) 
+                                            } 
+                                        }
                                     }
                                 }
                             }
