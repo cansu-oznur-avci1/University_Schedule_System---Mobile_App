@@ -2,11 +2,12 @@ package com.example.universityschedulesystem.data
 
 import android.content.Context
 import androidx.room.*
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AppDao {
     @Query("SELECT * FROM lecturers")
-    suspend fun getAllLecturers(): List<Lecturer>
+    fun getAllLecturers(): Flow<List<Lecturer>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertLecturers(lecturers: List<Lecturer>)
@@ -15,7 +16,7 @@ interface AppDao {
     suspend fun updateLecturer(lecturer: Lecturer)
 
     @Query("SELECT * FROM courses")
-    suspend fun getAllCourses(): List<Course>
+    fun getAllCourses(): Flow<List<Course>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertCourses(courses: List<Course>)
@@ -24,7 +25,7 @@ interface AppDao {
     suspend fun updateCourse(course: Course)
 
     @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC")
-    suspend fun getAllAuditLogs(): List<AuditLog>
+    fun getAllAuditLogs(): Flow<List<AuditLog>>
 
     @Insert
     suspend fun insertAuditLog(log: AuditLog)
