@@ -1,62 +1,60 @@
-# University Schedule System - Phase 2 (Firestore Edition)
+# University Schedule System - Final Version (Firestore Edition)
 
 A professional scheduling management application for university lecturers and administrators, fully integrated with **Firebase Firestore** for real-time data synchronization and cloud persistence.
 
-## 🚀 Phase 2 Features (Firestore Integration)
+## 🚀 Key Features
 
 - **Cloud Database Architecture:** Fully migrated from local Room to **Firebase Firestore** for global data access.
 - **Real-time Synchronization:** Instant updates across all devices for course assignments, availability changes, and administrative data.
 - **Secure Multi-Role Authentication:**
-    - Unified **Login Screen** as the application entry point.
+    - Unified **Login Screen** with input validation.
     - **Admin Role:** Full system access including data management, scheduling, and audit logs.
     - **Lecturer Role:** Personalized experience with access limited to Home and Calendar.
-- **Forced Password Security:** New lecturers are immediately prompted to change their auto-generated passwords upon first login.
+- **Forced Password Security:** New lecturers are immediately prompted to change their auto-generated passwords upon first login (Minimum 4 characters).
 - **Department Isolation:** Users work within a dedicated department context, ensuring data privacy and organizational clarity.
 
-## 🛠 Features
+## 🏛 Administrator Dashboard
 
-### 🏛 Administrator
-- **Classroom Management:** View, manually add, or batch import classrooms via Excel (supports Room Code and Capacity).
-- **Course & Lecturer Import:** Intelligent Excel processor that merges data from multiple files while preventing duplicates.
+- **Quick Summary Panels:** Real-time visibility on the Home screen:
+    - **Unassigned Lecturers:** List of lecturers with no scheduled courses.
+    - **Unassigned Courses:** List of courses not yet placed in the schedule.
+    - **Available Classrooms:** List of rooms with free time slots.
+- **Classroom Management:** 
+    - View and manually add classrooms.
+    - **Robust Excel Import:** Supports "Room Code" and "Capacity" headers with automatic column detection and numeric type handling.
+- **Course & Lecturer Import:** 
+    - **Intelligent Merging:** Merges data from multiple files while preventing duplicate lecturer records.
+    - **Advanced Title Parsing:** Accurately separates academic titles (Assist. Prof., Assoc. Prof., Prof. Dr., etc.) even from complex formats like `profdr_name_surname`.
 - **Advanced Assignment System:**
-    - Link Courses, Lecturers, and Classrooms to specific time slots.
     - **Conflict Prevention:** Automatic detection and blocking of double-booked lecturers or classrooms.
-    - **Availability Awareness:** Visual warnings when attempting to schedule a course in a lecturer's unavailable (Red) slot.
-- **Data Governance:** real-time **Audit Logs** and full database reset capabilities.
+    - **Availability Awareness:** Visual warnings for scheduling in a lecturer's unavailable (Red) slot.
+- **Data Governance:** 
+    - Real-time **Audit Logs** for tracking assignments.
+    - **Independent Clearing:** Separate reset buttons for Classrooms and Lecturers/Courses.
 
-### 🎓 Lecturers
+## 🎓 Lecturer Features
+
 - **Personalized Home Dashboard:**
-    - Title-aware welcome messages (e.g., *Welcome, Prof. Dr. Halit Bakır*).
-    - Total weekly assigned courses summary.
+    - Title-aware welcome messages.
+    - Weekly assignment summary count.
 - **Dynamic Availability Management:** Set weekly availability (Red/Green) with a single tap in the calendar.
 - **Rich Calendar View:**
-    - Displays Course Code, Course Name, and **Assigned Room Code** in each slot.
+    - Displays Course Code, Course Name, and **Assigned Room Code**.
     - Visual distinction between empty, unavailable, and occupied slots.
 
 ## 🎨 Design & UI
 
-- **Stylish Purple Theme:** A modern, soft purple aesthetic with elegant gradients.
-- **Adaptive Navigation:** Implemented `NavigationSuiteScaffold` for seamless transition between different screen sizes.
-- **Enhanced UX:** Vertical and horizontal scrolling in the calendar to accommodate full 08:00 - 17:00 schedules without text clipping.
+- **Modern Aesthetic:** Stylish purple theme with elegant gradients and Material 3 components.
+- **Adaptive Navigation:** `NavigationSuiteScaffold` for seamless transition across different screen sizes.
+- **Enhanced UX:** Full 08:00 - 17:00 schedule support with smooth horizontal and vertical scrolling.
 
 ## 📦 Tech Stack
 
 - **Kotlin:** Coroutines, Flow, StateFlow.
 - **Jetpack Compose:** Material 3, Adaptive Navigation.
-- **Firebase:** Firestore (NoSQL Cloud DB), Analytics.
+- **Firebase:** Firestore (NoSQL Cloud DB).
 - **Apache POI:** Robust Excel (.xlsx) processing.
 - **Architecture:** MVVM (Model-View-ViewModel) with Repository Pattern.
-
-## Getting Started
-
-1.  **Clone the repository:**
-    ```bash
-    git clone https://github.com/cansu-oznur-avci1/University_Schedule_System---Mobile_App.git
-    ```
-2.  **Firebase Configuration:**
-    - Place your `google-services.json` file in the `app/` directory.
-    - Ensure Firestore is enabled in your Firebase project.
-3.  **Build & Run:** Open the project in Android Studio (Ladybug 2024.2.1 or newer) and deploy to your device.
 
 ---
 *Prepared as part of the University Mobile Programming Lab Project.*

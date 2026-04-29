@@ -2,6 +2,7 @@ package com.example.universityschedulesystem.ui
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -13,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.apache.poi.ss.usermodel.CellType
 import org.apache.poi.ss.usermodel.WorkbookFactory
 import org.apache.poi.xssf.usermodel.XSSFWorkbook
 import java.io.InputStream
@@ -81,6 +83,8 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
     }
 
     suspend fun login(username: String, password: String, dao: AppDao): Boolean {
+        if (username.isBlank() || password.isBlank()) return false
+        
         val lecturers = _uiState.value.let { if (it is UiState.Success) it.data else emptyList() }
         val hashedPassword = hashPassword(password)
         val lecturer = lecturers.find { it.username == username && it.password == hashedPassword }
@@ -106,11 +110,14 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
 
     fun logout() {
         loggedInLecturer = null
+        selectedLecturerForCalendar = null
         userSettings = UserSettings()
     }
 
     fun changePassword(newPassword: String) {
         val current = loggedInLecturer ?: return
+        if (newPassword.length < 4) return
+        
         viewModelScope.launch {
             val updated = current.copy(password = hashPassword(newPassword), must_change_password = false)
             repository.updateLecturer(updated)
@@ -127,14 +134,16 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
 
     fun updateLecturerAvailability(lecturer: Lecturer, availability: List<AvailabilitySlot>) {
         viewModelScope.launch {
+            val updatedLecturer = lecturer.copy(availability = availability)
             if (loggedInLecturer?.id == lecturer.id) {
-                loggedInLecturer = loggedInLecturer?.copy(availability = availability)
+                loggedInLecturer = updatedLecturer
             }
-            repository.updateLecturer(lecturer.copy(availability = availability))
+            repository.updateLecturer(updatedLecturer)
         }
     }
 
     fun addClassroom(classroom: Classroom) {
+        if (classroom.roomCode.isBlank() || classroom.capacity <= 0) return
         viewModelScope.launch { repository.addClassroom(classroom) }
     }
 
@@ -163,7 +172,13 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                 timeSlot = timeSlot
             )
             repository.insertScheduleEntry(entry)
-            repository.insertAuditLog(AuditLog(user = userSettings.name.ifEmpty { "Admin" }, action = "Assignment", details = "${course.code} assigned to ${lecturer.name} in ${classroom.roomCode} at $day $timeSlot"))
+            repository.insertAuditLog(
+                AuditLog(
+                    user = if (userSettings.name.isBlank()) "Admin" else "${userSettings.name} ${userSettings.surname}", 
+                    action = "Schedule Assignment", 
+                    details = "Course: ${course.code}, Lecturer: ${lecturer.name}, Room: ${classroom.roomCode}, Time: $day $timeSlot"
+                )
+            )
         }
     }
 
@@ -192,7 +207,7 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                     workbook.close()
                     outputStream?.close()
                 }
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) { Log.e("EXCEL", "Template write failed", e) }
         }
     }
 
@@ -208,6 +223,54 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
             .filter { it.isLetterOrDigit() || it == '_' }
     }
 
+    private fun parseLecturerNameAndTitle(input: String): Pair<String, String> {
+        val academicTitles = listOf(
+            "Assist. Prof. Dr.", "Assist. Prof.", "Assoc. Prof. Dr.", "Assoc. Prof.",
+            "Prof. Dr.", "Prof.Dr.", "Prof Dr", "Prof.", "Prof",
+            "Doç. Dr.", "Doç.Dr.", "Doç Dr", "Doç.", "Doç",
+            "Dr. Öğr. Üyesi", "Dr.Öğr.Üyesi", "Dr. Öğretim Üyesi", "Dr.", "Dr",
+            "Arş. Gör. Dr.", "Arş. Gör.", "Öğr. Gör. Dr.", "Öğr. Gör.", "Arş.Gör.", "Öğr.Gör.",
+            "Assist Prof", "Assoc Prof", "Lecturer"
+        ).sortedByDescending { it.length }
+
+        val cleanInput = input.trim()
+        val lowerInput = cleanInput.lowercase()
+
+        // Handle underscore format (e.g. profdr_metin_zontul)
+        val prefixMap = mapOf(
+            "profdr_" to "Prof. Dr.",
+            "prof_" to "Prof.",
+            "docdr_" to "Doç. Dr.",
+            "doc_" to "Doç.",
+            "dr_" to "Dr.",
+            "assistprof_" to "Assist. Prof.",
+            "assocprof_" to "Assoc. Prof.",
+            "ogrgor_" to "Öğr. Gör.",
+            "arsgor_" to "Arş. Gör."
+        )
+
+        for ((prefix, titleVal) in prefixMap) {
+            if (lowerInput.startsWith(prefix)) {
+                val namePart = cleanInput.substring(prefix.length).replace("_", " ").trim()
+                val capitalizedName = namePart.split(" ").filter { it.isNotBlank() }
+                    .joinToString(" ") { word ->
+                        word.replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }
+                    }
+                return capitalizedName to titleVal
+            }
+        }
+
+        // Handle standard prefixes (with spaces/dots)
+        for (t in academicTitles) {
+            if (cleanInput.startsWith(t, ignoreCase = true)) {
+                val namePart = cleanInput.substring(t.length).trim().removePrefix(".").trim()
+                return namePart to t
+            }
+        }
+
+        return cleanInput to ""
+    }
+
     fun importDataFromExcel(context: Context, uri: Uri) {
         viewModelScope.launch {
             _importStatus.value = UiState.Loading
@@ -216,105 +279,105 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                     val currentDept = userSettings.department ?: Department.COMPUTER_ENGINEERING
                     val existingLecturers = repository.getLecturers().first().associateBy { it.username }
                     
-                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val inputStream = context.contentResolver.openInputStream(uri) ?: throw Exception("File access denied")
                     val workbook = WorkbookFactory.create(inputStream)
                     val sheets = (0 until workbook.numberOfSheets).map { workbook.getSheetAt(it) }
 
+                    var classroomCount = 0
+                    var courseCount = 0
+
                     // Classroom Import
-                    val classroomSheet = sheets.find { s ->
-                        s.sheetName.contains("DERSLİKLER", true) || s.sheetName.contains("Room", true) || s.sheetName.contains("Classroom", true)
-                    }
-
-                    if (classroomSheet != null) {
-                        val newClassrooms = mutableListOf<Classroom>()
-                        val header = classroomSheet.getRow(0)
-                        val codeIdx = (0 until (header?.lastCellNum?.toInt() ?: 1)).find { header?.getCell(it)?.toString()?.contains("Room Code", true) == true || header?.getCell(it)?.toString()?.contains("Oda", true) == true || header?.getCell(it)?.toString()?.contains("Code", true) == true } ?: 0
-                        val capIdx = (0 until (header?.lastCellNum?.toInt() ?: 2)).find { header?.getCell(it)?.toString()?.contains("Cap", true) == true || header?.getCell(it)?.toString()?.contains("Kapasite", true) == true || header?.getCell(it)?.toString()?.contains("Capacity", true) == true } ?: 1
-
-                        for (i in 1..classroomSheet.lastRowNum) {
-                            val row = classroomSheet.getRow(i) ?: continue
-                            val code = row.getCell(codeIdx)?.toString()?.trim() ?: ""
-                            val capRaw = row.getCell(capIdx)?.toString()?.trim() ?: "0"
-                            val cap = capRaw.toDoubleOrNull()?.toInt() ?: 0
-                            if (code.isNotEmpty()) {
-                                newClassrooms.add(Classroom(roomCode = code, capacity = cap, department = currentDept))
+                    for (sheet in sheets) {
+                        var headerRowIdx = -1; var codeIdx = -1; var capIdx = -1
+                        for (r in 0 until Math.min(sheet.lastRowNum + 1, 10)) {
+                            val row = sheet.getRow(r) ?: continue
+                            for (c in 0 until row.lastCellNum.toInt()) {
+                                val v = row.getCell(c)?.toString()?.trim()?.uppercase() ?: ""
+                                if (v == "ROOM CODE" || v == "DERSLİK KODU" || v == "ROOM") codeIdx = c
+                                if (v == "CAPACITY" || v.contains("KAPASİTE") || v == "CAP") capIdx = c
                             }
+                            if (codeIdx != -1) { headerRowIdx = r; break }
                         }
-                        repository.insertClassrooms(newClassrooms)
+
+                        if (codeIdx != -1) {
+                            val rooms = mutableListOf<Classroom>()
+                            for (r in (headerRowIdx + 1)..sheet.lastRowNum) {
+                                val row = sheet.getRow(r) ?: continue
+                                val code = row.getCell(codeIdx)?.let { if(it.cellType == CellType.NUMERIC) it.numericCellValue.toLong().toString() else it.toString().trim() } ?: ""
+                                if (code.isBlank()) continue
+                                val cap = row.getCell(capIdx)?.let { if(it.cellType == CellType.NUMERIC) it.numericCellValue.toInt() else it.toString().toDoubleOrNull()?.toInt() } ?: 0
+                                rooms.add(Classroom(roomCode = code, capacity = cap, department = currentDept))
+                            }
+                            if (rooms.isNotEmpty()) { repository.insertClassrooms(rooms); classroomCount += rooms.size }
+                        }
                     }
 
-                    // Course & Lecturer Import
-                    val courseSheet = sheets.find { s ->
-                        s.sheetName.contains("LİSANS", true) || s.sheetName.contains("Course", true) || s.sheetName.contains("Ders", true)
-                    } ?: workbook.getSheetAt(0)
-
-                    val fileCourses = mutableListOf<Course>()
-                    val fileLecturers = mutableMapOf<String, Lecturer>()
-                    
-                    val academicTitles = listOf(
-                        "Prof. Dr.", "Prof.Dr.", "Prof Dr", "Prof.", "Prof",
-                        "Doç. Dr.", "Doç.Dr.", "Doç Dr", "Doç.", "Doç",
-                        "Dr. Öğr. Üyesi", "Dr.Öğr.Üyesi", "Dr. Öğretim Üyesi", "Dr.Öğretim Üyesi",
-                        "Öğr. Gör. Dr.", "Öğr.Gör.Dr.", "Öğr. Gör.", "Öğr.Gör.",
-                        "Arş. Gör. Dr.", "Arş.Gör.Dr.", "Arş. Gör.", "Arş.Gör.",
-                        "Dr.", "Dr", "Assoc. Prof.", "Assist. Prof.", "Assoc.", "Assist."
-                    ).sortedByDescending { it.length }
-
+                    // Course and Lecturer Import
+                    val courseSheet = sheets.find { s -> s.sheetName.uppercase().contains("LİSANS") || s.sheetName.uppercase().contains("COURSE") } ?: sheets.first()
                     val cHeader = courseSheet.getRow(0)
-                    val cCodeIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 1)).find { cHeader?.getCell(it)?.toString()?.contains("Course Code", true) == true || cHeader?.getCell(it)?.toString()?.contains("Kod", true) == true || (cHeader?.getCell(it)?.toString()?.contains("Code", true) == true && !cHeader?.getCell(it)?.toString()?.contains("Room", true)!!) } ?: 0
-                    val cNameIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 2)).find { cHeader?.getCell(it)?.toString()?.contains("Course Name", true) == true || cHeader?.getCell(it)?.toString()?.contains("Ad", true) == true || cHeader?.getCell(it)?.toString()?.contains("Name", true) == true } ?: 1
-                    val cLectIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 3)).find { cHeader?.getCell(it)?.toString()?.contains("Lecturer", true) == true || cHeader?.getCell(it)?.toString()?.contains("Hoca", true) == true } ?: 2
+                    var cIdx = -1; var nIdx = -1; var lIdx = -1
+                    for (i in 0 until (cHeader?.lastCellNum?.toInt() ?: 0)) {
+                        val s = cHeader?.getCell(i)?.toString()?.trim()?.uppercase() ?: ""
+                        if (s == "COURSE CODE" || s == "KOD") cIdx = i
+                        if (s == "COURSE NAME" || s == "AD") nIdx = i
+                        if (s == "LECTURER" || s.contains("HOCA") || s.contains("ÖĞRETİM")) lIdx = i
+                    }
 
-                    for (i in 1..courseSheet.lastRowNum) {
-                        val row = courseSheet.getRow(i) ?: continue
-                        val code = row.getCell(cCodeIdx)?.toString()?.trim() ?: ""
-                        val name = row.getCell(cNameIdx)?.toString()?.trim() ?: ""
-                        val lNameRaw = row.getCell(cLectIdx)?.toString()?.trim() ?: ""
-                        if (code.isBlank() || lNameRaw.isBlank()) continue
+                    if (cIdx != -1 && lIdx != -1) {
+                        val fileCourses = mutableListOf<Course>()
+                        val fileLecturers = mutableMapOf<String, Lecturer>()
 
-                        var nameNoTitle = lNameRaw
-                        var titleStr = ""
-                        for (title in academicTitles) {
-                            if (lNameRaw.startsWith(title, ignoreCase = true)) {
-                                titleStr = title
-                                nameNoTitle = lNameRaw.substring(title.length).trim().removePrefix(".").trim()
-                                break
-                            }
-                        }
+                        for (i in 1..courseSheet.lastRowNum) {
+                            val row = courseSheet.getRow(i) ?: continue
+                            val code = row.getCell(cIdx)?.toString()?.trim() ?: ""
+                            val lRaw = row.getCell(lIdx)?.toString()?.trim() ?: ""
+                            if (code.isBlank() || lRaw.isBlank()) continue
 
-                        val username = nameNoTitle.normalizeForUsername()
-                        if (!fileLecturers.containsKey(username)) {
-                            val existing = existingLecturers[username]
-                            if (existing != null) {
-                                fileLecturers[username] = existing.copy(title = titleStr.ifBlank { "Lecturer" }, department = currentDept)
+                            val (name, title) = parseLecturerNameAndTitle(lRaw)
+                            val username = name.normalizeForUsername()
+
+                            // Merging logic: Check if lecturer already exists in DB or current import batch
+                            val existingLecturer = fileLecturers[username] ?: existingLecturers[username]
+                            
+                            if (existingLecturer != null) {
+                                // Update title if current one is better (not Lecturer/blank)
+                                val finalTitle = if (title.isNotBlank() && title != "Lecturer") title else existingLecturer.title
+                                fileLecturers[username] = existingLecturer.copy(
+                                    title = finalTitle,
+                                    department = currentDept
+                                )
                             } else {
-                                val rawPassword = (100000..999999).random().toString()
-                                println("DEBUG: Lecturer ${nameNoTitle} password: $rawPassword")
+                                val pass = (100000..999999).random().toString()
+                                Log.e("IMPORT_PASSWORD", "LECTURER: $name | USER: $username | PASS: $pass")
                                 fileLecturers[username] = Lecturer(
-                                    name = nameNoTitle,
-                                    title = titleStr.ifBlank { "Lecturer" },
-                                    department = currentDept,
-                                    username = username,
-                                    password = hashPassword(rawPassword),
+                                    name = name, 
+                                    title = title.ifBlank { "Lecturer" }, 
+                                    department = currentDept, 
+                                    username = username, 
+                                    password = hashPassword(pass), 
                                     must_change_password = true
                                 )
                             }
+                            fileCourses.add(Course(code = code, name = row.getCell(nIdx)?.toString()?.trim() ?: "", lecturerName = lRaw, department = currentDept))
                         }
-                        fileCourses.add(Course(code = code, name = name, lecturerName = lNameRaw, department = currentDept))
+                        repository.insertLecturers(fileLecturers.values.toList())
+                        repository.insertCourses(fileCourses)
+                        courseCount = fileCourses.size
                     }
-                    repository.insertLecturers(fileLecturers.values.toList())
-                    repository.insertCourses(fileCourses)
-                    workbook.close(); inputStream?.close()
-                    "Import Successful"
+                    
+                    workbook.close(); inputStream.close()
+                    "Import Successful: $classroomCount rooms, $courseCount courses."
                 }
                 _importStatus.value = UiState.Success(result)
             } catch (e: Exception) {
-                if (e is CancellationException) throw e
-                _importStatus.value = UiState.Error(e.message ?: "Failed")
+                Log.e("EXCEL_IMPORT", "Failed", e)
+                _importStatus.value = UiState.Error(e.message ?: "Import Error")
             }
         }
     }
 
     fun clearDatabase() { viewModelScope.launch { repository.clearAll() } }
+    fun clearLecturersAndCourses() { viewModelScope.launch { repository.clearLecturers(); repository.clearCourses() } }
+    fun clearClassrooms() { viewModelScope.launch { repository.clearClassrooms() } }
     fun resetImportStatus() { _importStatus.value = UiState.Idle }
 }

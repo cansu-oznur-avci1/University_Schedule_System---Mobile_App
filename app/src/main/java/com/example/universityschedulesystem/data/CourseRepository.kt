@@ -107,6 +107,18 @@ class CourseRepository(private val dao: AppDao) {
         deleteCollection("schedule_entries")
     }
 
+    suspend fun clearLecturers() = withContext(Dispatchers.IO) {
+        deleteCollection("lecturers")
+    }
+
+    suspend fun clearCourses() = withContext(Dispatchers.IO) {
+        deleteCollection("courses")
+    }
+
+    suspend fun clearClassrooms() = withContext(Dispatchers.IO) {
+        deleteCollection("classrooms")
+    }
+
     private suspend fun deleteCollection(path: String) {
         val col = firestore.collection(path)
         val snap = col.get().await()
