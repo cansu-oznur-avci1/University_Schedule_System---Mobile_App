@@ -30,14 +30,23 @@ interface AppDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertClassrooms(classrooms: List<Classroom>)
 
+    @Delete
+    suspend fun deleteClassroom(classroom: Classroom)
+
     @Query("SELECT * FROM audit_logs ORDER BY timestamp DESC")
     fun getAllAuditLogs(): Flow<List<AuditLog>>
 
     @Insert
     suspend fun insertAuditLog(log: AuditLog)
 
-    @Query("SELECT * FROM lecturers WHERE username = :username AND password = :password LIMIT 1")
-    suspend fun loginLecturer(username: String, password: String): Lecturer?
+    @Query("SELECT * FROM schedule_entries")
+    fun getAllScheduleEntries(): Flow<List<ScheduleEntry>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertScheduleEntry(entry: ScheduleEntry)
+
+    @Delete
+    suspend fun deleteScheduleEntry(entry: ScheduleEntry)
 
     @Query("DELETE FROM lecturers")
     suspend fun clearLecturers()
@@ -50,9 +59,12 @@ interface AppDao {
 
     @Query("DELETE FROM classrooms")
     suspend fun clearClassrooms()
+
+    @Query("DELETE FROM schedule_entries")
+    suspend fun clearScheduleEntries()
 }
 
-@Database(entities = [Lecturer::class, Course::class, AuditLog::class, Classroom::class], version = 3, exportSchema = false)
+@Database(entities = [Lecturer::class, Course::class, AuditLog::class, Classroom::class, ScheduleEntry::class], version = 4, exportSchema = false)
 @TypeConverters(Converters::class)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun appDao(): AppDao

@@ -35,7 +35,8 @@ data class UserSettings(
     val position: Position? = null,
     val educationLevel: EducationLevel? = null,
     val isRegistered: Boolean = false,
-    val lecturerId: Int? = null
+    val lecturerId: Int? = null,
+    val lecturerUsername: String? = null
 )
 
 @Entity(tableName = "lecturers")
@@ -60,11 +61,6 @@ data class AvailabilitySlot(
     var isAvailable: Boolean = true
 )
 
-data class ScheduledSlot(
-    val day: String = "",
-    val timeSlot: String = ""
-)
-
 @Entity(tableName = "classrooms")
 data class Classroom(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
@@ -80,10 +76,17 @@ data class Course(
     val name: String = "",
     val lecturerName: String = "",
     val department: Department = Department.COMPUTER_ENGINEERING,
-    val educationLevel: EducationLevel = EducationLevel.UNDERGRADUATE,
-    val scheduledSlots: List<ScheduledSlot> = emptyList(),
-    val classroomId: Int? = null,
-    val capacityRequirement: Int = 0
+    val educationLevel: EducationLevel = EducationLevel.UNDERGRADUATE
+)
+
+@Entity(tableName = "schedule_entries")
+data class ScheduleEntry(
+    @PrimaryKey(autoGenerate = true) val id: Int = 0,
+    val courseCode: String = "",
+    val lecturerUsername: String = "",
+    val roomCode: String = "",
+    val day: String = "",
+    val timeSlot: String = ""
 )
 
 @Entity(tableName = "audit_logs")
@@ -102,13 +105,6 @@ class Converters {
     @TypeConverter
     fun toAvailabilityList(value: String): List<AvailabilitySlot> {
         val listType = object : TypeToken<List<AvailabilitySlot>>() {}.type
-        return gson.fromJson(value, listType)
-    }
-    @TypeConverter
-    fun fromScheduledSlotList(value: List<ScheduledSlot>): String = gson.toJson(value)
-    @TypeConverter
-    fun toScheduledSlotList(value: String): List<ScheduledSlot> {
-        val listType = object : TypeToken<List<ScheduledSlot>>() {}.type
         return gson.fromJson(value, listType)
     }
 }

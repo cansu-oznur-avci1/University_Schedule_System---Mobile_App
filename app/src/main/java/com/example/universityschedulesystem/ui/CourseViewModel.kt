@@ -31,6 +31,9 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
     private val _classroomsState = MutableStateFlow<List<Classroom>>(emptyList())
     val classroomsState: StateFlow<List<Classroom>> = _classroomsState.asStateFlow()
 
+    private val _scheduleEntriesState = MutableStateFlow<List<ScheduleEntry>>(emptyList())
+    val scheduleEntriesState: StateFlow<List<ScheduleEntry>> = _scheduleEntriesState.asStateFlow()
+
     private val _auditLogs = MutableStateFlow<List<AuditLog>>(emptyList())
     val auditLogs: StateFlow<List<AuditLog>> = _auditLogs.asStateFlow()
 
@@ -51,20 +54,18 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
             try {
                 repository.getLecturers().onEach { lecturers ->
                     _uiState.value = UiState.Success(lecturers)
-                    // Sync the logged in lecturer reference with the fresh list from Firestore
                     loggedInLecturer?.let { current ->
-                        lecturers.find { it.username == current.username }?.let {
-                            loggedInLecturer = it
-                        }
+                        lecturers.find { it.username == current.username }?.let { loggedInLecturer = it }
                     }
                     selectedLecturerForCalendar?.let { current ->
-                        selectedLecturerForCalendar = lecturers.find { it.id == current.id }
+                        selectedLecturerForCalendar = lecturers.find { it.username == current.username }
                     }
                 }.launchIn(this)
 
                 repository.getCourses().onEach { _coursesState.value = it }.launchIn(this)
                 repository.getClassrooms().onEach { _classroomsState.value = it }.launchIn(this)
                 repository.getAuditLogs().onEach { _auditLogs.value = it }.launchIn(this)
+                repository.getScheduleEntries().onEach { _scheduleEntriesState.value = it }.launchIn(this)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _uiState.value = UiState.Error(e.message ?: "Load failed")
@@ -77,34 +78,6 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
         val md = MessageDigest.getInstance("SHA-256")
         val digest = md.digest(bytes)
         return digest.fold("") { str, it -> str + "%02x".format(it) }
-    }
-
-    fun checkConflict(lecturer: Lecturer, slots: List<ScheduledSlot>, classroomId: Int?): String? {
-        val currentCourses = _coursesState.value
-        for (slot in slots) {
-            val lecturerConflict = currentCourses.any { course ->
-                course.lecturerName.contains(lecturer.name) && 
-                course.scheduledSlots.any { it.day == slot.day && it.timeSlot == slot.timeSlot }
-            }
-            if (lecturerConflict) return "${lecturer.name} is already teaching during ${slot.day} ${slot.timeSlot}"
-
-            if (classroomId != null) {
-                val classroomConflict = currentCourses.any { course ->
-                    course.classroomId == classroomId && 
-                    course.scheduledSlots.any { it.day == slot.day && it.timeSlot == slot.timeSlot }
-                }
-                if (classroomConflict) return "The selected classroom is already occupied during ${slot.day} ${slot.timeSlot}"
-            }
-        }
-        return null
-    }
-
-    fun assignCourse(courseId: Int, slots: List<ScheduledSlot>, classroomId: Int? = null) {
-        viewModelScope.launch {
-            val course = _coursesState.value.find { it.id == courseId } ?: return@launch
-            repository.updateCourse(course.copy(scheduledSlots = slots, classroomId = classroomId))
-            repository.insertAuditLog(AuditLog(user = "Admin", action = "Schedule", details = "${course.code} assigned to classroom $classroomId"))
-        }
     }
 
     suspend fun login(username: String, password: String, dao: AppDao): Boolean {
@@ -124,7 +97,8 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                 department = lecturer.department,
                 position = Position.LECTURER,
                 isRegistered = true,
-                lecturerId = lecturer.id
+                lecturerId = lecturer.id,
+                lecturerUsername = lecturer.username
             )
             true
         } else false
@@ -153,12 +127,48 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
 
     fun updateLecturerAvailability(lecturer: Lecturer, availability: List<AvailabilitySlot>) {
         viewModelScope.launch {
-            // Optimistic UI update for the current user
             if (loggedInLecturer?.id == lecturer.id) {
                 loggedInLecturer = loggedInLecturer?.copy(availability = availability)
             }
             repository.updateLecturer(lecturer.copy(availability = availability))
         }
+    }
+
+    fun addClassroom(classroom: Classroom) {
+        viewModelScope.launch { repository.addClassroom(classroom) }
+    }
+
+    fun deleteClassroom(classroom: Classroom) {
+        viewModelScope.launch { repository.deleteClassroom(classroom) }
+    }
+
+    fun checkScheduleConflict(lecturer: Lecturer, classroom: Classroom, day: String, timeSlot: String): String? {
+        val entries = _scheduleEntriesState.value
+        if (entries.any { it.lecturerUsername == lecturer.username && it.day == day && it.timeSlot == timeSlot }) {
+            return "Lecturer is already assigned at this time."
+        }
+        if (entries.any { it.roomCode == classroom.roomCode && it.day == day && it.timeSlot == timeSlot }) {
+            return "Classroom is already occupied at this time."
+        }
+        return null
+    }
+
+    fun assignSchedule(course: Course, lecturer: Lecturer, classroom: Classroom, day: String, timeSlot: String) {
+        viewModelScope.launch {
+            val entry = ScheduleEntry(
+                courseCode = course.code,
+                lecturerUsername = lecturer.username,
+                roomCode = classroom.roomCode,
+                day = day,
+                timeSlot = timeSlot
+            )
+            repository.insertScheduleEntry(entry)
+            repository.insertAuditLog(AuditLog(user = userSettings.name.ifEmpty { "Admin" }, action = "Assignment", details = "${course.code} assigned to ${lecturer.name} in ${classroom.roomCode} at $day $timeSlot"))
+        }
+    }
+
+    fun removeScheduleEntry(entry: ScheduleEntry) {
+        viewModelScope.launch { repository.deleteScheduleEntry(entry) }
     }
 
     fun writeExcelTemplate(context: Context, uri: Uri) {
@@ -182,9 +192,7 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                     workbook.close()
                     outputStream?.close()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
+            } catch (e: Exception) { e.printStackTrace() }
         }
     }
 
@@ -205,71 +213,97 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
             _importStatus.value = UiState.Loading
             try {
                 val result = withContext(Dispatchers.IO) {
+                    val currentDept = userSettings.department ?: Department.COMPUTER_ENGINEERING
+                    val existingLecturers = repository.getLecturers().first().associateBy { it.username }
+                    
                     val inputStream = context.contentResolver.openInputStream(uri)
                     val workbook = WorkbookFactory.create(inputStream)
-                    
-                    val classroomSheet = workbook.getSheet("DERSLİKLER")
-                    val courseSheet = workbook.getSheet("LİSANS") ?: workbook.getSheetAt(0)
+                    val sheets = (0 until workbook.numberOfSheets).map { workbook.getSheetAt(it) }
+
+                    // Classroom Import
+                    val classroomSheet = sheets.find { s ->
+                        s.sheetName.contains("DERSLİKLER", true) || s.sheetName.contains("Room", true) || s.sheetName.contains("Classroom", true)
+                    }
 
                     if (classroomSheet != null) {
                         val newClassrooms = mutableListOf<Classroom>()
+                        val header = classroomSheet.getRow(0)
+                        val codeIdx = (0 until (header?.lastCellNum?.toInt() ?: 1)).find { header?.getCell(it)?.toString()?.contains("Room Code", true) == true || header?.getCell(it)?.toString()?.contains("Oda", true) == true || header?.getCell(it)?.toString()?.contains("Code", true) == true } ?: 0
+                        val capIdx = (0 until (header?.lastCellNum?.toInt() ?: 2)).find { header?.getCell(it)?.toString()?.contains("Cap", true) == true || header?.getCell(it)?.toString()?.contains("Kapasite", true) == true || header?.getCell(it)?.toString()?.contains("Capacity", true) == true } ?: 1
+
                         for (i in 1..classroomSheet.lastRowNum) {
                             val row = classroomSheet.getRow(i) ?: continue
-                            val code = row.getCell(0)?.toString()?.trim() ?: ""
-                            val cap = row.getCell(1)?.toString()?.toDouble()?.toInt() ?: 0
+                            val code = row.getCell(codeIdx)?.toString()?.trim() ?: ""
+                            val capRaw = row.getCell(capIdx)?.toString()?.trim() ?: "0"
+                            val cap = capRaw.toDoubleOrNull()?.toInt() ?: 0
                             if (code.isNotEmpty()) {
-                                newClassrooms.add(Classroom(id = i, roomCode = code, capacity = cap, department = userSettings.department ?: Department.COMPUTER_ENGINEERING))
+                                newClassrooms.add(Classroom(roomCode = code, capacity = cap, department = currentDept))
                             }
                         }
                         repository.insertClassrooms(newClassrooms)
                     }
 
+                    // Course & Lecturer Import
+                    val courseSheet = sheets.find { s ->
+                        s.sheetName.contains("LİSANS", true) || s.sheetName.contains("Course", true) || s.sheetName.contains("Ders", true)
+                    } ?: workbook.getSheetAt(0)
+
                     val fileCourses = mutableListOf<Course>()
                     val fileLecturers = mutableMapOf<String, Lecturer>()
+                    
                     val academicTitles = listOf(
-                        "Prof. Dr.", "Doç. Dr.", "Dr. Öğr. Üyesi", "Dr. Öğretim Üyesi",
-                        "Öğr. Gör. Dr.", "Öğr. Gör.", "Arş. Gör. Dr.", "Arş. Gör.",
-                        "Prof.", "Doç.", "Dr.", "Assoc. Prof.", "Assist. Prof.", "Assoc.", "Assist."
+                        "Prof. Dr.", "Prof.Dr.", "Prof Dr", "Prof.", "Prof",
+                        "Doç. Dr.", "Doç.Dr.", "Doç Dr", "Doç.", "Doç",
+                        "Dr. Öğr. Üyesi", "Dr.Öğr.Üyesi", "Dr. Öğretim Üyesi", "Dr.Öğretim Üyesi",
+                        "Öğr. Gör. Dr.", "Öğr.Gör.Dr.", "Öğr. Gör.", "Öğr.Gör.",
+                        "Arş. Gör. Dr.", "Arş.Gör.Dr.", "Arş. Gör.", "Arş.Gör.",
+                        "Dr.", "Dr", "Assoc. Prof.", "Assist. Prof.", "Assoc.", "Assist."
                     ).sortedByDescending { it.length }
+
+                    val cHeader = courseSheet.getRow(0)
+                    val cCodeIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 1)).find { cHeader?.getCell(it)?.toString()?.contains("Course Code", true) == true || cHeader?.getCell(it)?.toString()?.contains("Kod", true) == true || (cHeader?.getCell(it)?.toString()?.contains("Code", true) == true && !cHeader?.getCell(it)?.toString()?.contains("Room", true)!!) } ?: 0
+                    val cNameIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 2)).find { cHeader?.getCell(it)?.toString()?.contains("Course Name", true) == true || cHeader?.getCell(it)?.toString()?.contains("Ad", true) == true || cHeader?.getCell(it)?.toString()?.contains("Name", true) == true } ?: 1
+                    val cLectIdx = (0 until (cHeader?.lastCellNum?.toInt() ?: 3)).find { cHeader?.getCell(it)?.toString()?.contains("Lecturer", true) == true || cHeader?.getCell(it)?.toString()?.contains("Hoca", true) == true } ?: 2
 
                     for (i in 1..courseSheet.lastRowNum) {
                         val row = courseSheet.getRow(i) ?: continue
-                        val code = row.getCell(0)?.toString()?.trim() ?: ""
-                        val name = row.getCell(1)?.toString()?.trim() ?: ""
-                        val lNameRaw = row.getCell(2)?.toString()?.trim() ?: ""
+                        val code = row.getCell(cCodeIdx)?.toString()?.trim() ?: ""
+                        val name = row.getCell(cNameIdx)?.toString()?.trim() ?: ""
+                        val lNameRaw = row.getCell(cLectIdx)?.toString()?.trim() ?: ""
                         if (code.isBlank() || lNameRaw.isBlank()) continue
 
                         var nameNoTitle = lNameRaw
                         var titleStr = ""
-                        
                         for (title in academicTitles) {
                             if (lNameRaw.startsWith(title, ignoreCase = true)) {
                                 titleStr = title
-                                nameNoTitle = lNameRaw.substring(title.length).trim()
+                                nameNoTitle = lNameRaw.substring(title.length).trim().removePrefix(".").trim()
                                 break
                             }
                         }
 
-                        if (!fileLecturers.containsKey(nameNoTitle)) {
-                            val rawPassword = (100000..999999).random().toString()
-                            println("DEBUG: Lecturer ${nameNoTitle} password: $rawPassword")
-                            
-                            fileLecturers[nameNoTitle] = Lecturer(
-                                id = i,
-                                name = nameNoTitle,
-                                title = titleStr.ifBlank { "Lecturer" },
-                                department = userSettings.department ?: Department.COMPUTER_ENGINEERING,
-                                username = nameNoTitle.normalizeForUsername(),
-                                password = hashPassword(rawPassword),
-                                must_change_password = true
-                            )
+                        val username = nameNoTitle.normalizeForUsername()
+                        if (!fileLecturers.containsKey(username)) {
+                            val existing = existingLecturers[username]
+                            if (existing != null) {
+                                fileLecturers[username] = existing.copy(title = titleStr.ifBlank { "Lecturer" }, department = currentDept)
+                            } else {
+                                val rawPassword = (100000..999999).random().toString()
+                                println("DEBUG: Lecturer ${nameNoTitle} password: $rawPassword")
+                                fileLecturers[username] = Lecturer(
+                                    name = nameNoTitle,
+                                    title = titleStr.ifBlank { "Lecturer" },
+                                    department = currentDept,
+                                    username = username,
+                                    password = hashPassword(rawPassword),
+                                    must_change_password = true
+                                )
+                            }
                         }
-                        fileCourses.add(Course(id = i, code = code, name = name, lecturerName = lNameRaw, department = userSettings.department ?: Department.COMPUTER_ENGINEERING))
+                        fileCourses.add(Course(code = code, name = name, lecturerName = lNameRaw, department = currentDept))
                     }
-
                     repository.insertLecturers(fileLecturers.values.toList())
                     repository.insertCourses(fileCourses)
-                    
                     workbook.close(); inputStream?.close()
                     "Import Successful"
                 }
@@ -278,13 +312,6 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                 if (e is CancellationException) throw e
                 _importStatus.value = UiState.Error(e.message ?: "Failed")
             }
-        }
-    }
-
-    fun removeCourseAssignment(courseId: Int) {
-        viewModelScope.launch {
-            val course = _coursesState.value.find { it.id == courseId } ?: return@launch
-            repository.updateCourse(course.copy(scheduledSlots = emptyList(), classroomId = null))
         }
     }
 

@@ -18,9 +18,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
-import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.automirrored.filled.Logout
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
@@ -35,12 +33,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.universityschedulesystem.data.*
-import com.example.universityschedulesystem.ui.CourseViewModel
+import com.example.universityschedulesystem.ui.*
 import com.example.universityschedulesystem.ui.theme.UniversityScheduleSystemTheme
 import kotlinx.coroutines.launch
 
@@ -54,6 +53,7 @@ class MainActivity : ComponentActivity() {
                 val repository = CourseRepository(db.appDao())
                 val viewModel: CourseViewModel = viewModel(factory = object : androidx.lifecycle.ViewModelProvider.Factory {
                     override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                        @Suppress("UNCHECKED_CAST")
                         return CourseViewModel(repository) as T
                     }
                 })
@@ -66,7 +66,8 @@ class MainActivity : ComponentActivity() {
 enum class AppDestinations(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Default.Home),
     CALENDAR("Calendar", Icons.Default.DateRange),
-    DATA("Data", Icons.AutoMirrored.Filled.List),
+    CLASSROOMS("Classrooms", Icons.Default.MeetingRoom),
+    DATA("Lecturers", Icons.AutoMirrored.Filled.List),
     SETTINGS("Settings", Icons.Default.Settings),
 }
 
@@ -78,12 +79,10 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
     val loggedInLecturer = viewModel.loggedInLecturer
 
     if (!userSettings.isRegistered) {
-        LoginScreen(viewModel, dao)
+        LoginScreen(viewModel, dao, onNavigateToSettings = { currentDestination = AppDestinations.SETTINGS })
     } else if (loggedInLecturer?.must_change_password == true) {
         PasswordChangeScreen(
-            onPasswordChanged = { current, new ->
-                viewModel.changePasswordWithVerification(current, new)
-            },
+            onPasswordChanged = { current, new -> viewModel.changePasswordWithVerification(current, new) },
             onLogout = { viewModel.logout() }
         )
     } else {
@@ -93,52 +92,50 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
                     val isVisible = if (userSettings.position == Position.LECTURER) {
                         destination == AppDestinations.HOME || destination == AppDestinations.CALENDAR
                     } else true
-
                     if (isVisible) {
                         item(
                             icon = { Icon(destination.icon, contentDescription = destination.label) },
                             label = { Text(destination.label) },
                             selected = destination == currentDestination,
-                            onClick = { currentDestination = destination }
+                            onClick = { 
+                                if (userSettings.position == Position.ADMIN && userSettings.department == null && destination != AppDestinations.SETTINGS) {
+                                    // Block access
+                                } else {
+                                    currentDestination = destination 
+                                }
+                            }
                         )
                     }
                 }
             }
         ) {
             Scaffold(
-                modifier = Modifier.fillMaxSize(),
                 topBar = {
                     CenterAlignedTopAppBar(
-                        title = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.School, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                Spacer(Modifier.width(8.dp))
-                                Text("University Scheduler", fontWeight = FontWeight.Bold)
-                            }
-                        },
+                        title = { Text("University Scheduler", fontWeight = FontWeight.Bold) },
                         actions = {
-                            IconButton(onClick = {
-                                viewModel.logout()
-                                currentDestination = AppDestinations.HOME
-                            }) {
-                                Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = "Logout")
+                            IconButton(onClick = { viewModel.logout(); currentDestination = AppDestinations.HOME }) {
+                                Icon(Icons.AutoMirrored.Filled.Logout, "Logout")
                             }
                         }
                     )
                 }
             ) { innerPadding ->
                 Box(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
+                    if (userSettings.position == Position.ADMIN && userSettings.department == null && currentDestination != AppDestinations.SETTINGS) {
+                        LaunchedEffect(Unit) { currentDestination = AppDestinations.SETTINGS }
+                    }
+                    
                     when (currentDestination) {
                         AppDestinations.HOME -> HomeScreen(viewModel)
                         AppDestinations.CALENDAR -> CalendarScreen(viewModel)
+                        AppDestinations.CLASSROOMS -> ClassroomScreen(viewModel)
                         AppDestinations.DATA -> DataScreen(viewModel, onGoToCalendar = { currentDestination = AppDestinations.CALENDAR })
-                        AppDestinations.SETTINGS -> SettingsScreen(
-                            userSettings = userSettings,
-                            onSave = {
-                                viewModel.userSettings = it
-                                currentDestination = AppDestinations.HOME
-                            }
-                        )
+                        AppDestinations.SETTINGS -> SettingsScreen(userSettings, onSave = { 
+                            viewModel.userSettings = it
+                            viewModel.selectedLecturerForCalendar = null
+                            currentDestination = AppDestinations.HOME 
+                        })
                     }
                 }
             }
@@ -147,69 +144,25 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
 }
 
 @Composable
-fun LoginScreen(viewModel: CourseViewModel, dao: AppDao) {
-    val scope = rememberCoroutineScope()
-    val context = LocalContext.current
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
-    val gradient = Brush.verticalGradient(colors = listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
+fun LoginScreen(viewModel: CourseViewModel, dao: AppDao, onNavigateToSettings: () -> Unit) {
+    val scope = rememberCoroutineScope(); val context = LocalContext.current
+    var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
+    val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
 
-    Box(modifier = Modifier.fillMaxSize().background(gradient), contentAlignment = Alignment.Center) {
-        Card(
-            modifier = Modifier.fillMaxWidth().padding(32.dp),
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
-        ) {
-            Column(modifier = Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Box(Modifier.fillMaxSize().background(gradient), Alignment.Center) {
+        Card(Modifier.fillMaxWidth().padding(32.dp), RoundedCornerShape(24.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Default.School, null, Modifier.size(64.dp), MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(8.dp))
-                Text("University Scheduler", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text("Please login to continue", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                
-                Spacer(Modifier.height(24.dp))
-                
-                OutlinedTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    label = { Text("Username") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    leadingIcon = { Icon(Icons.Default.Person, null) }
-                )
+                Text("Login", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(16.dp))
-                OutlinedTextField(
-                    value = password,
-                    onValueChange = { password = it },
-                    label = { Text("Password") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    leadingIcon = { Icon(Icons.Default.Lock, null) }
-                )
-                
+                OutlinedTextField(username, { username = it }, label = { Text("Username") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(24.dp))
-                
-                Button(
-                    onClick = {
-                        scope.launch {
-                            if (!viewModel.login(username, password, dao)) {
-                                Toast.makeText(context, "Invalid Credentials", Toast.LENGTH_SHORT).show()
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text("Login")
-                }
-                
-                Spacer(Modifier.height(16.dp))
-                
+                Button(onClick = { scope.launch { if (!viewModel.login(username, password, dao)) Toast.makeText(context, "Invalid Credentials", Toast.LENGTH_SHORT).show() } }, modifier = Modifier.fillMaxWidth()) { Text("Login") }
                 TextButton(onClick = { 
-                    viewModel.userSettings = UserSettings(position = Position.ADMIN, isRegistered = true, name = "Admin")
-                }) {
-                    Text("Continue as Administrator")
-                }
+                    viewModel.userSettings = UserSettings(position = Position.ADMIN, isRegistered = true, name = "")
+                    onNavigateToSettings()
+                }) { Text("Continue as Administrator") }
             }
         }
     }
@@ -217,97 +170,94 @@ fun LoginScreen(viewModel: CourseViewModel, dao: AppDao) {
 
 @Composable
 fun PasswordChangeScreen(onPasswordChanged: (String, String) -> Unit, onLogout: () -> Unit) {
-    var currentPassword by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    var confirmPassword by remember { mutableStateOf("") }
-    val context = LocalContext.current
-
-    Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(Icons.Default.LockReset, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
-        Spacer(Modifier.height(16.dp))
-        Text("Password Change Required", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("For security, you must change your password before proceeding.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
-        
-        Spacer(Modifier.height(32.dp))
-        
-        OutlinedTextField(
-            value = currentPassword,
-            onValueChange = { currentPassword = it },
-            label = { Text("Current Password") },
-            modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation()
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = newPassword,
-            onValueChange = { newPassword = it },
-            label = { Text("New Password") },
-            modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation()
-        )
-        Spacer(Modifier.height(16.dp))
-        OutlinedTextField(
-            value = confirmPassword,
-            onValueChange = { confirmPassword = it },
-            label = { Text("Confirm New Password") },
-            modifier = Modifier.fillMaxWidth(),
-            visualTransformation = PasswordVisualTransformation()
-        )
-        
-        Spacer(Modifier.height(32.dp))
-        
-        Button(
-            onClick = {
-                if (newPassword != confirmPassword) {
-                    Toast.makeText(context, "New passwords do not match", Toast.LENGTH_SHORT).show()
-                } else if (newPassword.length < 4) {
-                    Toast.makeText(context, "Password must be at least 4 characters", Toast.LENGTH_SHORT).show()
-                } else {
-                    onPasswordChanged(currentPassword, newPassword)
-                }
-            },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Save & Continue")
-        }
-        
-        Spacer(Modifier.height(8.dp))
-        
-        TextButton(onClick = onLogout) {
-            Text("Cancel and Logout")
+    var cur by remember { mutableStateOf("") }; var new by remember { mutableStateOf("") }; var conf by remember { mutableStateOf("") }
+    val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
+    Box(Modifier.fillMaxSize().background(gradient), Alignment.Center) {
+        Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Icon(Icons.Default.LockReset, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
+            Text("Initial Password Change", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(24.dp))
+            OutlinedTextField(cur, { cur = it }, label = { Text("Current Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(new, { new = it }, label = { Text("New Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(conf, { conf = it }, label = { Text("Confirm New Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            Spacer(Modifier.height(24.dp))
+            Button(onClick = { if (new == conf && new.length >= 4) onPasswordChanged(cur, new) }, modifier = Modifier.fillMaxWidth()) { Text("Save & Continue") }
+            TextButton(onClick = onLogout) { Text("Logout") }
         }
     }
 }
 
 @Composable
 fun HomeScreen(viewModel: CourseViewModel) {
-    val userSettings = viewModel.userSettings
-    val gradient = Brush.verticalGradient(colors = listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
+    val user = viewModel.userSettings; val lecturer = viewModel.loggedInLecturer
+    val scheduleEntries by viewModel.scheduleEntriesState.collectAsStateWithLifecycle()
+    val assignedCount = if (user.position == Position.LECTURER && lecturer != null) scheduleEntries.count { it.lecturerUsername == lecturer.username } else 0
+    val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
 
-    Column(modifier = Modifier.fillMaxSize().background(gradient).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        ElevatedCard(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
-            Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(if (userSettings.position == Position.ADMIN) Icons.Default.AdminPanelSettings else Icons.Default.School, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(16.dp))
-                Text("Welcome,", style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
-                Text(
-                    text = if (userSettings.name.isNotBlank()) "${userSettings.name} ${userSettings.surname}" else "User",
-                    style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary,
-                    textAlign = TextAlign.Center
-                )
-                Spacer(Modifier.height(16.dp))
-                Text("Role: ${userSettings.position?.displayName}", style = MaterialTheme.typography.bodyMedium)
-                if (userSettings.department != null) {
-                    Text("Department: ${userSettings.department.displayName}", style = MaterialTheme.typography.bodyMedium)
+    Box(Modifier.fillMaxSize().background(gradient), Alignment.Center) {
+        Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
+                Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(if (user.position == Position.ADMIN) Icons.Default.AdminPanelSettings else Icons.Default.School, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
+                    Text("Welcome,", style = MaterialTheme.typography.bodyLarge)
+                    
+                    val welcomeName = when {
+                        user.position == Position.LECTURER && lecturer != null -> "${lecturer.title} ${lecturer.name}"
+                        user.position == Position.ADMIN && user.name.isNotBlank() -> "Admin ${user.name} ${user.surname}"
+                        else -> "Administrator"
+                    }
+                    
+                    Text(welcomeName, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
+                    Text("Department: ${user.department?.displayName ?: "NOT SELECTED"}", style = MaterialTheme.typography.bodyMedium, color = if (user.department == null) Color.Red else Color.Unspecified)
+                    if (user.position == Position.LECTURER) {
+                        Spacer(Modifier.height(24.dp))
+                        Surface(color = MaterialTheme.colorScheme.secondaryContainer, shape = RoundedCornerShape(16.dp), modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Weekly Summary", style = MaterialTheme.typography.labelLarge)
+                                Text("$assignedCount Courses Assigned", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun ClassroomScreen(viewModel: CourseViewModel) {
+    val context = LocalContext.current
+    val classrooms by viewModel.classroomsState.collectAsStateWithLifecycle()
+    var showAddRoom by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    
+    val excelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let { viewModel.importDataFromExcel(context, it) } }
+    val templateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { it?.let { viewModel.writeExcelTemplate(context, it) } }
+
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Classrooms", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            IconButton(onClick = { showAddRoom = true }) { Icon(Icons.Default.Add, "Add") }
+            IconButton(onClick = { templateLauncher.launch("Classroom_Template.xlsx") }) { Icon(Icons.Default.Download, "Template") }
+            IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.CloudUpload, "Import") }
+            IconButton(onClick = { showClearConfirm = true }) { Icon(Icons.Default.DeleteSweep, "Clear", tint = Color.Red) }
+        }
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(classrooms.filter { it.department == viewModel.userSettings.department }) { room ->
+                ListItem(
+                    headlineContent = { Text(room.roomCode, fontWeight = FontWeight.Bold) },
+                    supportingContent = { Text("Capacity: ${room.capacity}") },
+                    trailingContent = { IconButton(onClick = { viewModel.deleteClassroom(room) }) { Icon(Icons.Default.Delete, null, tint = Color.Red) } }
+                )
+            }
+        }
+    }
+    if (showAddRoom) {
+        var code by remember { mutableStateOf("") }; var cap by remember { mutableStateOf("") }
+        AlertDialog(onDismissRequest = { showAddRoom = false }, title = { Text("Add Room") }, text = { Column { OutlinedTextField(code, { code = it }, label = { Text("Room Code") }); OutlinedTextField(cap, { cap = it }, label = { Text("Capacity") }) } }, confirmButton = { Button(onClick = { viewModel.addClassroom(Classroom(roomCode = code, capacity = cap.toIntOrNull() ?: 0, department = viewModel.userSettings.department ?: Department.COMPUTER_ENGINEERING)); showAddRoom = false }) { Text("Add") } })
+    }
+    if (showClearConfirm) {
+        AlertDialog(onDismissRequest = { showClearConfirm = false }, title = { Text("Clear Classrooms") }, text = { Text("Proceed?") }, confirmButton = { Button(onClick = { viewModel.clearDatabase(); showClearConfirm = false }) { Text("Clear All") } })
     }
 }
 
@@ -315,187 +265,109 @@ fun HomeScreen(viewModel: CourseViewModel) {
 fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
-    val importStatus by viewModel.importStatus.collectAsStateWithLifecycle()
     val auditLogs by viewModel.auditLogs.collectAsStateWithLifecycle()
-    
+    val courses by viewModel.coursesState.collectAsStateWithLifecycle()
     var showLogs by remember { mutableStateOf(false) }
+    var selectedLecturerForDetails by remember { mutableStateOf<Lecturer?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
-    var selectedLecturerDetails by remember { mutableStateOf<Lecturer?>(null) }
 
-    val excelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { viewModel.importDataFromExcel(context, it) }
-    }
+    val excelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let { viewModel.importDataFromExcel(context, it) } }
+    val templateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { it?.let { viewModel.writeExcelTemplate(context, it) } }
 
-    val templateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { uri ->
-        uri?.let { viewModel.writeExcelTemplate(context, it) }
-    }
-
-    LaunchedEffect(importStatus) { 
-        if (importStatus is UiState.Success) { 
-            Toast.makeText(context, (importStatus as UiState.Success).data, Toast.LENGTH_SHORT).show()
-            viewModel.resetImportStatus() 
-        } 
-    }
-
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (showLogs) "Audit Logs" else "Data Management", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
+            val title = if (showLogs) "Logs" else "Lecturers"
+            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             if (viewModel.userSettings.position == Position.ADMIN) {
-                IconButton(onClick = { showClearConfirm = true }) { Icon(Icons.Default.DeleteSweep, "Clear", tint = MaterialTheme.colorScheme.error) }
-                IconButton(onClick = { showLogs = !showLogs }) { Icon(if (showLogs) Icons.AutoMirrored.Filled.List else Icons.Default.History, "Logs") }
-                IconButton(onClick = { templateLauncher.launch("University_Template.xlsx") }) { Icon(Icons.Default.Download, "Template") }
-                IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.Add, "Import") }
+                IconButton(onClick = { showClearConfirm = true }) { Icon(Icons.Default.DeleteSweep, null, tint = Color.Red) }
+                IconButton(onClick = { showLogs = !showLogs }) { Icon(if (showLogs) Icons.AutoMirrored.Filled.List else Icons.Default.History, null) }
+                IconButton(onClick = { templateLauncher.launch("University_Template.xlsx") }) { Icon(Icons.Default.Download, null) }
+                IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.CloudUpload, null) }
             }
         }
-
-        Box(modifier = Modifier.weight(1f)) {
+        Box(Modifier.weight(1f)) {
             if (showLogs) {
-                LazyColumn(Modifier.fillMaxSize()) {
-                    items(auditLogs) { log ->
-                        ListItem(
-                            headlineContent = { Text("${log.user}: ${log.action}") },
-                            supportingContent = { Text(log.details) },
-                            overlineContent = { Text(java.text.DateFormat.getDateTimeInstance().format(java.util.Date(log.timestamp))) }
-                        )
-                    }
-                }
+                LazyColumn { items(auditLogs) { log -> ListItem(headlineContent = { Text("${log.user}: ${log.action}") }, supportingContent = { Text(log.details) }) } }
             } else {
-                when (uiState) {
-                    is UiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                when (val state = uiState) {
                     is UiState.Success -> {
-                        val lecturers = (uiState as UiState.Success).data
-                        if (lecturers.isEmpty()) {
-                            EmptyDataView(
-                                onImport = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) },
-                                onGetTemplate = { templateLauncher.launch("University_Template.xlsx") }
-                            )
-                        } else {
-                            LazyColumn {
-                                items(lecturers) { lecturer ->
-                                    ListItem(
-                                        headlineContent = { Text(lecturer.name, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { selectedLecturerDetails = lecturer }) },
-                                        supportingContent = { Text(lecturer.title) },
-                                        trailingContent = { IconButton(onClick = { viewModel.selectedLecturerForCalendar = lecturer; onGoToCalendar() }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, null) } }
-                                    )
-                                }
-                            }
-                        }
+                        LazyColumn { items(state.data.filter { it.department == viewModel.userSettings.department }) { l -> ListItem(headlineContent = { Text(l.name, Modifier.clickable { selectedLecturerForDetails = l }) }, supportingContent = { Text(l.title) }, trailingContent = { IconButton(onClick = { viewModel.selectedLecturerForCalendar = l; onGoToCalendar() }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, null) } }) } }
                     }
-                    is UiState.Error -> Text("Error: ${(uiState as UiState.Error).message}")
+                    is UiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     else -> Unit
                 }
             }
         }
     }
-
     if (showClearConfirm) {
-        AlertDialog(onDismissRequest = { showClearConfirm = false }, title = { Text("Clear Database") }, text = { Text("Delete all records?") }, confirmButton = { Button(onClick = { viewModel.clearDatabase(); showClearConfirm = false }) { Text("Clear") } }, dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } })
+        AlertDialog(onDismissRequest = { showClearConfirm = false }, title = { Text("Clear All Data") }, text = { Text("Proceed?") }, confirmButton = { Button(onClick = { viewModel.clearDatabase(); showClearConfirm = false }) { Text("Clear") } })
     }
-
-    if (selectedLecturerDetails != null) {
-        val lecturer = selectedLecturerDetails!!
-        val courses by viewModel.coursesState.collectAsStateWithLifecycle()
-        val lecturerCourses = courses.filter { it.lecturerName.contains(lecturer.name) }
-        AlertDialog(onDismissRequest = { selectedLecturerDetails = null }, title = { Text(lecturer.name) }, text = {
+    if (selectedLecturerForDetails != null) {
+        val l = selectedLecturerForDetails!!
+        val lecturerCourses = courses.filter { it.lecturerName.contains(l.name) }
+        AlertDialog(onDismissRequest = { selectedLecturerForDetails = null }, title = { Text(l.name) }, text = {
             Column {
-                Text("Username: ${lecturer.username}")
-                Text("Password: ${lecturer.password}")
+                Text("Username: ${l.username}"); Text("Password Hash: ${l.password.take(15)}...")
                 Spacer(Modifier.height(8.dp))
-                Text("Courses:", fontWeight = FontWeight.Bold)
+                Text("Assigned Courses:", fontWeight = FontWeight.Bold)
                 lecturerCourses.forEach { Text("- ${it.code}: ${it.name}") }
+                if (lecturerCourses.isEmpty()) Text("No courses assigned.", color = Color.Gray)
             }
-        }, confirmButton = { TextButton(onClick = { selectedLecturerDetails = null }) { Text("Close") } })
+        }, confirmButton = { TextButton(onClick = { selectedLecturerForDetails = null }) { Text("Close") } })
     }
 }
 
 @Composable
 fun CalendarScreen(viewModel: CourseViewModel) {
-    val days = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday")
-    val hours = (8..17).map { "$it:00" }
-    val lecturersState by viewModel.uiState.collectAsStateWithLifecycle()
+    val days = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday"); val hours = (8..17).map { "$it:00" }
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val courses by viewModel.coursesState.collectAsStateWithLifecycle()
-    
-    val currentLoggedInLecturer = viewModel.loggedInLecturer
-    val selectedLecturer = if (viewModel.userSettings.position == Position.ADMIN) {
-        viewModel.selectedLecturerForCalendar
-    } else {
-        currentLoggedInLecturer
-    }
-    
-    var selectedSlots by remember { mutableStateOf(setOf<Pair<String, String>>()) }
-    var showAssignDialog by remember { mutableStateOf(false) }
+    val classrooms by viewModel.classroomsState.collectAsStateWithLifecycle()
+    val entries by viewModel.scheduleEntriesState.collectAsStateWithLifecycle()
+    val current = viewModel.loggedInLecturer; val selected = if (viewModel.userSettings.position == Position.ADMIN) viewModel.selectedLecturerForCalendar else current
+    var showAssign by remember { mutableStateOf<Pair<String, String>?>(null) }; val context = LocalContext.current
+    val verticalScrollState = rememberScrollState()
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
         if (viewModel.userSettings.position == Position.ADMIN) {
-            var expanded by remember { mutableStateOf(false) }
-            Box(Modifier.fillMaxWidth()) {
-                OutlinedButton(onClick = { expanded = true }, Modifier.fillMaxWidth()) { Text(selectedLecturer?.name ?: "Select Lecturer") }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    if (lecturersState is UiState.Success) {
-                        (lecturersState as UiState.Success).data.forEach { l -> 
-                            DropdownMenuItem(text = { Text(l.name) }, onClick = { viewModel.selectedLecturerForCalendar = l; expanded = false }) 
-                        }
+            var exp by remember { mutableStateOf(false) }
+            Box(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                OutlinedButton(onClick = { exp = true }, Modifier.fillMaxWidth()) { Text(selected?.name ?: "Select Lecturer View") }
+                DropdownMenu(exp, { exp = false }) {
+                    val state = uiState
+                    if (state is UiState.Success) {
+                        state.data.filter { it.department == viewModel.userSettings.department }.forEach { l -> DropdownMenuItem(text = { Text(l.name) }, onClick = { viewModel.selectedLecturerForCalendar = l; exp = false }) }
                     }
                 }
             }
         }
-
-        if (selectedLecturer != null) {
-            if (viewModel.userSettings.position == Position.ADMIN && selectedSlots.isNotEmpty()) {
-                Button(onClick = { showAssignDialog = true }, Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Text("Assign to ${selectedSlots.size} Slots") }
-            }
-
-            Row(Modifier.horizontalScroll(rememberScrollState())) {
-                Column {
-                    Spacer(Modifier.height(40.dp).width(60.dp))
-                    hours.forEach { hour -> Box(Modifier.height(60.dp).width(60.dp), Alignment.Center) { Text(hour, style = MaterialTheme.typography.labelSmall) } }
-                }
-                days.forEach { day ->
-                    Column {
-                        Box(Modifier.height(40.dp).width(120.dp), Alignment.Center) { Text(day, fontWeight = FontWeight.Bold) }
-                        hours.forEach { hour ->
-                            val availability = selectedLecturer.availability.find { it.day == day && it.timeSlot == hour }
-                            val isAvailable = availability?.isAvailable ?: true
-                            
-                            val assignedCourse = courses.find { it.lecturerName.contains(selectedLecturer.name) && it.scheduledSlots.any { s -> s.day == day && s.timeSlot == hour } }
-                            val isSelected = selectedSlots.contains(day to hour)
-
-                            Box(
-                                modifier = Modifier.height(60.dp).width(120.dp).padding(2.dp).clip(RoundedCornerShape(4.dp))
-                                    .background(
-                                        when {
-                                            assignedCourse != null -> MaterialTheme.colorScheme.primaryContainer
-                                            isSelected -> MaterialTheme.colorScheme.secondaryContainer
-                                            !isAvailable -> Color(0xFFFFCDD2) // Red for unavailable
-                                            else -> Color(0xFFC8E6C9) // Green for available
-                                        }
-                                    )
-                                    .border(1.dp, Color.Gray.copy(alpha = 0.2f))
-                                    .clickable {
-                                        if (viewModel.userSettings.position == Position.LECTURER && currentLoggedInLecturer?.id == selectedLecturer.id) {
-                                            val currentAvailability = selectedLecturer.availability.toMutableList()
-                                            val existingIndex = currentAvailability.indexOfFirst { it.day == day && it.timeSlot == hour }
-                                            
-                                            if (existingIndex != -1) {
-                                                currentAvailability[existingIndex] = currentAvailability[existingIndex].copy(isAvailable = !isAvailable)
-                                            } else {
-                                                currentAvailability.add(AvailabilitySlot(day, hour, false))
-                                            }
-                                            viewModel.updateLecturerAvailability(selectedLecturer, currentAvailability)
-                                        } else if (viewModel.userSettings.position == Position.ADMIN && assignedCourse == null) {
-                                            selectedSlots = if (isSelected) selectedSlots - (day to hour) else selectedSlots + (day to hour)
-                                        }
-                                    },
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (assignedCourse != null) {
-                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                        Text(assignedCourse.code, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
-                                        if (viewModel.userSettings.position == Position.ADMIN) { 
-                                            IconButton(onClick = { viewModel.removeCourseAssignment(assignedCourse.id) }, Modifier.size(20.dp)) { 
-                                                Icon(Icons.Default.Delete, null, tint = Color.Red) 
-                                            } 
-                                        }
+        if (selected != null) {
+            Box(modifier = Modifier.weight(1f).verticalScroll(verticalScrollState)) {
+                Row(Modifier.horizontalScroll(rememberScrollState())) {
+                    Column { Spacer(Modifier.height(40.dp).width(60.dp)); hours.forEach { h -> Box(Modifier.height(110.dp).width(60.dp), Alignment.Center) { Text(h, style = MaterialTheme.typography.labelSmall) } } }
+                    days.forEach { d ->
+                        Column {
+                            Box(Modifier.height(40.dp).width(150.dp), Alignment.Center) { Text(d, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+                            hours.forEach { h ->
+                                val avail = selected.availability.find { it.day == d && it.timeSlot == h }?.isAvailable ?: true
+                                val entry = entries.find { it.lecturerUsername == selected.username && it.day == d && it.timeSlot == h }
+                                val course = entry?.let { e -> courses.find { it.code == e.courseCode } }
+                                val roomCode = entry?.roomCode ?: ""
+                                Box(modifier = Modifier.height(110.dp).width(150.dp).padding(2.dp).clip(RoundedCornerShape(8.dp)).background(if (course != null) MaterialTheme.colorScheme.primaryContainer else if (!avail) Color(0xFFFFCDD2) else Color(0xFFC8E6C9)).border(1.dp, Color.Gray.copy(0.1f)).clickable {
+                                    if (viewModel.userSettings.position == Position.LECTURER && current?.username == selected.username) {
+                                        val list = selected.availability.toMutableList(); val idx = list.indexOfFirst { it.day == d && it.timeSlot == h }
+                                        if (idx != -1) list[idx] = list[idx].copy(isAvailable = !avail) else list.add(AvailabilitySlot(d, h, false))
+                                        viewModel.updateLecturerAvailability(selected, list)
+                                    } else if (viewModel.userSettings.position == Position.ADMIN) {
+                                        if (!avail) Toast.makeText(context, "Warning: Lecturer marked this slot as unavailable!", Toast.LENGTH_LONG).show()
+                                        showAssign = d to h
+                                    }
+                                }, contentAlignment = Alignment.Center) {
+                                    if (course != null) Column(modifier = Modifier.padding(4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(course.code, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
+                                        Text(course.name, style = MaterialTheme.typography.labelSmall, maxLines = 2, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, lineHeight = 12.sp)
+                                        if (roomCode.isNotEmpty()) Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(top = 4.dp)) { Text(roomCode, Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
+                                        if (viewModel.userSettings.position == Position.ADMIN) IconButton(onClick = { viewModel.removeScheduleEntry(entry!!) }, Modifier.size(16.dp)) { Icon(Icons.Default.Delete, null, tint = Color.Red) }
                                     }
                                 }
                             }
@@ -505,54 +377,48 @@ fun CalendarScreen(viewModel: CourseViewModel) {
             }
         }
     }
-
-    if (showAssignDialog) {
-        val lecturerCourses = courses.filter { it.lecturerName.contains(selectedLecturer?.name ?: "") && it.scheduledSlots.isEmpty() }
-        AlertDialog(onDismissRequest = { showAssignDialog = false }, title = { Text("Assign Course") }, text = {
-            LazyColumn {
-                items(lecturerCourses) { course ->
-                    ListItem(headlineContent = { Text("${course.code}: ${course.name}") }, modifier = Modifier.clickable {
-                        viewModel.assignCourse(course.id, selectedSlots.map { ScheduledSlot(it.first, it.second) })
-                        selectedSlots = emptySet(); showAssignDialog = false
-                    })
-                }
+    if (showAssign != null) {
+        var selC by remember { mutableStateOf<Course?>(null) }; var selR by remember { mutableStateOf<Classroom?>(null) }
+        var cExp by remember { mutableStateOf(false) }; var rExp by remember { mutableStateOf(false) }
+        val (d, h) = showAssign!!
+        AlertDialog(onDismissRequest = { showAssign = null }, title = { Text("Assign Course at $d $h") }, text = {
+            Column {
+                Box { OutlinedButton(onClick = { cExp = true }, Modifier.fillMaxWidth()) { Text(selC?.name ?: "Select Course") }; DropdownMenu(cExp, { cExp = false }) {
+                    val lecturerCourses = courses.filter { it.department == viewModel.userSettings.department && it.lecturerName.contains(selected?.name ?: "") }
+                    lecturerCourses.forEach { c -> DropdownMenuItem(text = { Text(c.name) }, onClick = { selC = c; cExp = false }) } 
+                } }
+                Spacer(Modifier.height(8.dp))
+                Box { OutlinedButton(onClick = { rExp = true }, Modifier.fillMaxWidth()) { Text(selR?.roomCode ?: "Select Classroom") }; DropdownMenu(rExp, { rExp = false }) { classrooms.filter { it.department == viewModel.userSettings.department }.forEach { r -> DropdownMenuItem(text = { Text(r.roomCode) }, onClick = { selR = r; rExp = false }) } } }
             }
-        }, confirmButton = {}, dismissButton = { TextButton(onClick = { showAssignDialog = false }) { Text("Cancel") } }
-        )
+        }, confirmButton = { Button(onClick = {
+            val err = viewModel.checkScheduleConflict(selected!!, selR!!, d, h)
+            if (err != null) Toast.makeText(context, err, Toast.LENGTH_LONG).show() else { viewModel.assignSchedule(selC!!, selected, selR!!, d, h); showAssign = null }
+        }, enabled = selC != null && selR != null) { Text("Assign") } })
     }
 }
 
 @Composable
-fun SettingsScreen(userSettings: UserSettings, onSave: (UserSettings) -> Unit) {
-    var name by remember { mutableStateOf(userSettings.name) }
-    var surname by remember { mutableStateOf(userSettings.surname) }
-    var department by remember { mutableStateOf(userSettings.department ?: Department.COMPUTER_ENGINEERING) }
-    Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("Profile Setup", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Name") }, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(value = surname, onValueChange = { surname = it }, label = { Text("Surname") }, modifier = Modifier.fillMaxWidth())
-        Text("Department", style = MaterialTheme.typography.labelLarge)
-        Department.entries.forEach { dept ->
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { department = dept }) {
-                RadioButton(selected = department == dept, onClick = { department = dept })
-                Text(dept.displayName)
-            }
+fun SettingsScreen(user: UserSettings, onSave: (UserSettings) -> Unit) {
+    var name by remember { mutableStateOf(user.name) }; var surname by remember { mutableStateOf(user.surname) }; var dept by remember { mutableStateOf(user.department ?: Department.COMPUTER_ENGINEERING) }
+    val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
+    Box(Modifier.fillMaxSize().background(gradient)) {
+        Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Text("User Profile", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+            OutlinedTextField(name, { name = it }, label = { Text("First Name") }, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(surname, { surname = it }, label = { Text("Last Name") }, modifier = Modifier.fillMaxWidth())
+            Text("Department Selection", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
+            Department.entries.forEach { d -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { dept = d }) { RadioButton(dept == d, onClick = { dept = d }); Text(d.displayName) } }
+            Button(onClick = { onSave(user.copy(name = name, surname = surname, department = dept, isRegistered = true)) }, modifier = Modifier.fillMaxWidth()) { Text("Save & Continue") }
         }
-        Button(onClick = { onSave(userSettings.copy(name = name, surname = surname, department = department, isRegistered = true)) }, modifier = Modifier.fillMaxWidth()) { Text("Save & Continue") }
     }
 }
 
 @Composable
 fun EmptyDataView(onImport: () -> Unit, onGetTemplate: () -> Unit) {
-    Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(Icons.Default.CloudUpload, null, Modifier.size(64.dp), tint = Color.Gray)
-        Spacer(Modifier.height(16.dp))
         Text("No data available.", color = Color.Gray)
-        Button(onClick = onGetTemplate, Modifier.padding(top = 16.dp)) {
-            Icon(Icons.Default.Download, null)
-            Spacer(Modifier.width(8.dp))
-            Text("Get Excel Template")
-        }
-        TextButton(onClick = onImport, Modifier.padding(top = 8.dp)) { Text("Already have a file? Import here") }
+        Button(onGetTemplate, Modifier.padding(top = 16.dp)) { Text("Get Excel Template") }
+        TextButton(onImport) { Text("Import here") }
     }
 }
