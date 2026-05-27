@@ -15,6 +15,7 @@ class CourseRepository(private val dao: AppDao) {
     private val classroomsColl = firestore.collection("classrooms")
     private val auditLogsColl = firestore.collection("audit_logs")
     private val scheduleColl = firestore.collection("schedule_entries")
+    private val adminAccountsColl = firestore.collection("admin_accounts")
 
     fun getLecturers(): Flow<List<Lecturer>> = callbackFlow {
         val subscription = lecturersColl.addSnapshotListener { snapshot, _ ->
@@ -49,6 +50,18 @@ class CourseRepository(private val dao: AppDao) {
             if (snapshot != null) trySend(snapshot.toObjects(ScheduleEntry::class.java))
         }
         awaitClose { subscription.remove() }
+    }
+
+    // Technical Requirement: Admin Accounts
+    fun getAdminAccounts(): Flow<List<AdminAccount>> = callbackFlow {
+        val subscription = adminAccountsColl.addSnapshotListener { snapshot, _ ->
+            if (snapshot != null) trySend(snapshot.toObjects(AdminAccount::class.java))
+        }
+        awaitClose { subscription.remove() }
+    }
+
+    suspend fun updateAdminAccount(adminAccount: AdminAccount) = withContext(Dispatchers.IO) {
+        adminAccountsColl.document(adminAccount.department).set(adminAccount).await()
     }
 
     suspend fun insertLecturers(lecturers: List<Lecturer>) = withContext(Dispatchers.IO) {

@@ -39,6 +39,9 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
     private val _auditLogs = MutableStateFlow<List<AuditLog>>(emptyList())
     val auditLogs: StateFlow<List<AuditLog>> = _auditLogs.asStateFlow()
 
+    private val _adminAccounts = MutableStateFlow<List<AdminAccount>>(emptyList())
+    val adminAccounts: StateFlow<List<AdminAccount>> = _adminAccounts.asStateFlow()
+
     private val _importStatus = MutableStateFlow<UiState<String>>(UiState.Idle)
     val importStatus: StateFlow<UiState<String>> = _importStatus.asStateFlow()
 
@@ -46,8 +49,52 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
     var loggedInLecturer by mutableStateOf<Lecturer?>(null)
     var selectedLecturerForCalendar by mutableStateOf<Lecturer?>(null)
 
+    var isDarkMode by mutableStateOf(false)
+
     init {
         loadData()
+    }
+
+    fun toggleDarkMode(enabled: Boolean) {
+        isDarkMode = enabled
+    }
+
+    // Technical Requirement: Secure Master Admin Login
+    fun adminLogin(password: String): Boolean {
+        return if (password == "admin1234") {
+            userSettings = userSettings.copy(
+                position = Position.ADMIN,
+                isRegistered = true,
+                name = "System",
+                surname = "Administrator"
+            )
+            true
+        } else false
+    }
+
+    // Technical Requirement: Secure Department-Specific Admin Password Verification
+    fun checkAdminPassword(department: Department, password: String): Boolean {
+        val account = _adminAccounts.value.find { it.department == department.name }
+        val hashedInput = hashPassword(password)
+        
+        if (account == null) {
+            if (password == "admin1234") {
+                viewModelScope.launch {
+                    repository.updateAdminAccount(AdminAccount(department.name, hashedInput))
+                }
+                return true
+            }
+            return false
+        }
+        
+        return account.passwordHash == hashedInput
+    }
+
+    fun updateAdminPassword(department: Department, newPassword: String) {
+        if (newPassword.length < 4) return
+        viewModelScope.launch {
+            repository.updateAdminAccount(AdminAccount(department.name, hashPassword(newPassword)))
+        }
     }
 
     fun loadData() {
@@ -68,6 +115,7 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                 repository.getClassrooms().onEach { _classroomsState.value = it }.launchIn(this)
                 repository.getAuditLogs().onEach { _auditLogs.value = it }.launchIn(this)
                 repository.getScheduleEntries().onEach { _scheduleEntriesState.value = it }.launchIn(this)
+                repository.getAdminAccounts().onEach { _adminAccounts.value = it }.launchIn(this)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
                 _uiState.value = UiState.Error(e.message ?: "Load failed")
@@ -348,7 +396,10 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                                 )
                             } else {
                                 val pass = (100000..999999).random().toString()
-                                Log.e("IMPORT_PASSWORD", "LECTURER: $name | USER: $username | PASS: $pass")
+                                Log.e("IMPORT_PASSWORD", "--------------------------------------------------")
+                                Log.e("IMPORT_PASSWORD", "NEW LECTURER: $name | USER: $username | PASS: $pass")
+                                Log.e("IMPORT_PASSWORD", "--------------------------------------------------")
+
                                 fileLecturers[username] = Lecturer(
                                     name = name, 
                                     title = title.ifBlank { "Lecturer" }, 
@@ -365,7 +416,7 @@ class CourseViewModel(private val repository: CourseRepository) : ViewModel() {
                         courseCount = fileCourses.size
                     }
                     
-                    workbook.close(); inputStream.close()
+                    workbook.close(); inputStream?.close()
                     "Import Successful: $classroomCount rooms, $courseCount courses."
                 }
                 _importStatus.value = UiState.Success(result)

@@ -98,6 +98,12 @@ data class AuditLog(
     val details: String = ""
 )
 
+// Technical Requirement: Department Specific Admin Passwords
+data class AdminAccount(
+    val department: String = "", // Department enum name
+    val passwordHash: String = ""
+)
+
 class Converters {
     private val gson = Gson()
     @TypeConverter

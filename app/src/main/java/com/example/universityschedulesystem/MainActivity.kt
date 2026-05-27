@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -34,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -48,18 +50,63 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            UniversityScheduleSystemTheme {
-                val db = AppDatabase.getDatabase(LocalContext.current)
-                val repository = CourseRepository(db.appDao())
-                val viewModel: CourseViewModel = viewModel(factory = object : androidx.lifecycle.ViewModelProvider.Factory {
-                    override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
-                        @Suppress("UNCHECKED_CAST")
-                        return CourseViewModel(repository) as T
-                    }
-                })
+            val db = AppDatabase.getDatabase(LocalContext.current)
+            val repository = CourseRepository(db.appDao())
+            val viewModel: CourseViewModel = viewModel(factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+                override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T {
+                    @Suppress("UNCHECKED_CAST")
+                    return CourseViewModel(repository) as T
+                }
+            })
+
+            UniversityScheduleSystemTheme(darkTheme = viewModel.isDarkMode) {
                 UniversityScheduleSystemApp(viewModel, db.appDao())
             }
         }
+    }
+}
+
+@Composable
+fun UserAvatar(name: String, size: Dp = 48.dp) {
+    val titlesToExclude = listOf(
+        "Prof.", "Prof", "Dr.", "Dr", "Doç.", "Doc.", "Doç", "Doc", 
+        "Assist.", "Assoc.", "Assist", "Assoc", "Öğr.", "Ogr.", "Gör.", "Gor.", 
+        "Arş.", "Ars.", "Üyesi", "Uyesi", "Admin", "Administrator", "Lecturer"
+    )
+    
+    val nameParts = name.trim().split(" ")
+        .filter { it.isNotBlank() }
+        .filter { part -> 
+            titlesToExclude.none { title -> part.equals(title, ignoreCase = true) } 
+        }
+
+    val initials = nameParts
+        .take(2)
+        .joinToString("") { it.take(1).uppercase() }
+        .ifEmpty { 
+            name.trim().firstOrNull()?.toString()?.uppercase() ?: "?" 
+        }
+
+    val colors = listOf(
+        Color(0xFF9C27B0), Color(0xFF673AB7), Color(0xFF3F51B5),
+        Color(0xFF2196F3), Color(0xFF03A9F4), Color(0xFF00BCD4),
+        Color(0xFF009688), Color(0xFF4CAF50), Color(0xFF8BC34A)
+    )
+    val backgroundColor = colors[name.hashCode().let { if (it < 0) -it else it } % colors.size]
+
+    Box(
+        modifier = Modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(backgroundColor),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = initials,
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = (size.value * 0.4).sp
+        )
     }
 }
 
@@ -131,11 +178,18 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
                         AppDestinations.CALENDAR -> CalendarScreen(viewModel)
                         AppDestinations.CLASSROOMS -> ClassroomScreen(viewModel)
                         AppDestinations.DATA -> DataScreen(viewModel, onGoToCalendar = { currentDestination = AppDestinations.CALENDAR })
-                        AppDestinations.SETTINGS -> SettingsScreen(userSettings, onSave = { 
-                            viewModel.userSettings = it
-                            viewModel.selectedLecturerForCalendar = null
-                            currentDestination = AppDestinations.HOME 
-                        })
+                        AppDestinations.SETTINGS -> SettingsScreen(
+                            user = userSettings,
+                            isDarkMode = viewModel.isDarkMode,
+                            onDarkModeToggle = { viewModel.toggleDarkMode(it) },
+                            onCheckAdminPassword = { dept, pass -> viewModel.checkAdminPassword(dept, pass) },
+                            onUpdateAdminPassword = { dept, pass -> viewModel.updateAdminPassword(dept, pass) },
+                            onSave = { 
+                                viewModel.userSettings = it
+                                viewModel.selectedLecturerForCalendar = null
+                                currentDestination = AppDestinations.HOME 
+                            }
+                        )
                     }
                 }
             }
@@ -147,6 +201,7 @@ fun UniversityScheduleSystemApp(viewModel: CourseViewModel, dao: AppDao) {
 fun LoginScreen(viewModel: CourseViewModel, dao: AppDao, onNavigateToSettings: () -> Unit) {
     val scope = rememberCoroutineScope(); val context = LocalContext.current
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
+    var showAdminDialog by remember { mutableStateOf(false) }
     val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
 
     Box(Modifier.fillMaxSize().background(gradient), Alignment.Center) {
@@ -160,12 +215,43 @@ fun LoginScreen(viewModel: CourseViewModel, dao: AppDao, onNavigateToSettings: (
                 OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(24.dp))
                 Button(onClick = { scope.launch { if (!viewModel.login(username, password, dao)) Toast.makeText(context, "Invalid Credentials", Toast.LENGTH_SHORT).show() } }, modifier = Modifier.fillMaxWidth()) { Text("Login") }
-                TextButton(onClick = { 
-                    viewModel.userSettings = UserSettings(position = Position.ADMIN, isRegistered = true, name = "")
-                    onNavigateToSettings()
-                }) { Text("Continue as Administrator") }
+                TextButton(onClick = { showAdminDialog = true }) { Text("Continue as Administrator") }
             }
         }
+    }
+
+    if (showAdminDialog) {
+        var adminPass by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAdminDialog = false },
+            title = { Text("Master Admin Authentication") },
+            text = {
+                Column {
+                    Text("Please enter the Master Admin Password to continue.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = adminPass,
+                        onValueChange = { adminPass = it },
+                        label = { Text("Master Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (viewModel.adminLogin(adminPass)) {
+                        showAdminDialog = false
+                        onNavigateToSettings()
+                    } else {
+                        Toast.makeText(context, "Incorrect Master Password", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Authenticate") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showAdminDialog = false }) { Text("Cancel") }
+            }
+        )
     }
 }
 
@@ -209,14 +295,21 @@ fun HomeScreen(viewModel: CourseViewModel) {
         Column(Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally) {
             ElevatedCard(Modifier.fillMaxWidth(), shape = RoundedCornerShape(24.dp)) {
                 Column(modifier = Modifier.padding(32.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(if (user.position == Position.ADMIN) Icons.Default.AdminPanelSettings else Icons.Default.School, null, Modifier.size(80.dp), MaterialTheme.colorScheme.primary)
-                    Text("Welcome,", style = MaterialTheme.typography.bodyLarge)
-                    
                     val welcomeName = when {
                         user.position == Position.LECTURER && lecturer != null -> "${lecturer.title} ${lecturer.name}"
                         user.position == Position.ADMIN && user.name.isNotBlank() -> "Admin ${user.name} ${user.surname}"
                         else -> "Administrator"
                     }
+                    
+                    val avatarName = when {
+                        user.position == Position.LECTURER && lecturer != null -> lecturer.name
+                        user.position == Position.ADMIN && user.name.isNotBlank() -> "${user.name} ${user.surname}"
+                        else -> welcomeName
+                    }
+                    
+                    UserAvatar(name = avatarName, size = 80.dp)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Welcome,", style = MaterialTheme.typography.bodyLarge)
                     
                     Text(welcomeName, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
                     Text("Department: ${user.department?.displayName ?: "NOT SELECTED"}", style = MaterialTheme.typography.bodyMedium, color = if (user.department == null) Color.Red else Color.Unspecified)
@@ -237,48 +330,78 @@ fun HomeScreen(viewModel: CourseViewModel) {
                 Text("Schedule Status Summary", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.align(Alignment.Start))
                 Spacer(Modifier.height(16.dp))
 
-                val unassignedLecturers = lecturers.filter { it.department == user.department && scheduleEntries.none { entry -> entry.lecturerUsername == it.username } }
-                val unassignedCourses = courses.filter { it.department == user.department && scheduleEntries.none { entry -> entry.courseCode == it.code } }
-                val availableClassrooms = classrooms.filter { it.department == user.department && scheduleEntries.count { entry -> entry.roomCode == it.roomCode } < 50 }
+                val deptLecturers = lecturers.filter { it.department == user.department }
+                val deptCourses = courses.filter { it.department == user.department }
+                val deptClassrooms = classrooms.filter { it.department == user.department }
 
-                SummaryPanel(
-                    title = "Unassigned Lecturers",
-                    items = unassignedLecturers.map { "${it.title} ${it.name} (${it.department.displayName})" },
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
+                val assignedLecturersCount = deptLecturers.count { l -> scheduleEntries.any { it.lecturerUsername == l.username } }
+                val assignedCoursesCount = deptCourses.count { c -> scheduleEntries.any { it.courseCode == c.code } }
 
-                SummaryPanel(
-                    title = "Unassigned Courses",
-                    items = unassignedCourses.map { "${it.code}: ${it.name}" },
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StatCard(
+                        title = "Lecturers Assigned",
+                        current = assignedLecturersCount,
+                        total = deptLecturers.size,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.weight(1f)
+                    )
+                    StatCard(
+                        title = "Courses Scheduled",
+                        current = assignedCoursesCount,
+                        total = deptCourses.size,
+                        color = MaterialTheme.colorScheme.secondary,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
 
-                SummaryPanel(
-                    title = "Available Classrooms",
-                    items = availableClassrooms.map { "${it.roomCode} (Cap: ${it.capacity})" },
-                    modifier = Modifier.padding(bottom = 12.dp)
-                )
+                Spacer(Modifier.height(12.dp))
+
+                Card(modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text("Classroom Weekly Occupancy", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                        
+                        if (deptClassrooms.isEmpty()) {
+                            Text("No classrooms available.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        } else {
+                            deptClassrooms.forEach { room ->
+                                val roomSlots = scheduleEntries.count { it.roomCode == room.roomCode }
+                                val occupancy = roomSlots.toFloat() / 50f // 5 days * 10 slots
+                                
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
+                                    Text(room.roomCode, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, modifier = Modifier.width(60.dp))
+                                    LinearProgressIndicator(
+                                        progress = { occupancy },
+                                        modifier = Modifier.weight(1f).height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                        color = if (occupancy > 0.8f) Color.Red else MaterialTheme.colorScheme.primary,
+                                        trackColor = MaterialTheme.colorScheme.surface
+                                    )
+                                    Text("${(occupancy * 100).toInt()}%", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 8.dp).width(35.dp), textAlign = TextAlign.End)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 @Composable
-fun SummaryPanel(title: String, items: List<String>, modifier: Modifier = Modifier) {
-    Card(modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
-        Column(Modifier.padding(16.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-            HorizontalDivider(Modifier.padding(vertical = 8.dp))
-            if (items.isEmpty()) {
-                Text("None", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            } else {
-                items.take(10).forEach { item ->
-                    Text("• $item", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
-                if (items.size > 10) {
-                    Text("...and ${items.size - 10} more", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.secondary)
-                }
-            }
+fun StatCard(title: String, current: Int, total: Int, color: Color, modifier: Modifier = Modifier) {
+    val progress = if (total > 0) current.toFloat() / total.toFloat() else 0f
+    Card(modifier = modifier, shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))) {
+        Column(Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(title, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold, color = color, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(8.dp))
+            Text("$current / $total", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.ExtraBold)
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                color = color,
+                trackColor = MaterialTheme.colorScheme.surface
+            )
         }
     }
 }
@@ -290,6 +413,14 @@ fun ClassroomScreen(viewModel: CourseViewModel) {
     var showAddRoom by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
     
+    var searchQuery by remember { mutableStateOf("") }
+    val filteredClassrooms by remember(classrooms, searchQuery) {
+        derivedStateOf {
+            classrooms.filter { it.department == viewModel.userSettings.department }
+                .filter { it.roomCode.contains(searchQuery, ignoreCase = true) }
+        }
+    }
+
     val excelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let { viewModel.importDataFromExcel(context, it) } }
     val templateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { it?.let { viewModel.writeExcelTemplate(context, it) } }
 
@@ -301,8 +432,19 @@ fun ClassroomScreen(viewModel: CourseViewModel) {
             IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.CloudUpload, "Import") }
             IconButton(onClick = { showClearConfirm = true }) { Icon(Icons.Default.DeleteSweep, "Clear", tint = Color.Red) }
         }
+        
+        OutlinedTextField(
+            value = searchQuery,
+            onValueChange = { searchQuery = it },
+            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+            placeholder = { Text("Search Classroom...") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            shape = RoundedCornerShape(12.dp),
+            singleLine = true
+        )
+
         LazyColumn(Modifier.fillMaxSize()) {
-            items(classrooms.filter { it.department == viewModel.userSettings.department }) { room ->
+            items(filteredClassrooms) { room ->
                 ListItem(
                     headlineContent = { Text(room.roomCode, fontWeight = FontWeight.Bold) },
                     supportingContent = { Text("Capacity: ${room.capacity} | Dept: ${room.department.displayName}") },
@@ -330,6 +472,8 @@ fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
     var selectedLecturerForDetails by remember { mutableStateOf<Lecturer?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
 
+    var searchQuery by remember { mutableStateOf("") }
+    
     val excelLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { it?.let { viewModel.importDataFromExcel(context, it) } }
     val templateLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) { it?.let { viewModel.writeExcelTemplate(context, it) } }
 
@@ -344,13 +488,40 @@ fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
                 IconButton(onClick = { excelLauncher.launch(arrayOf("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")) }) { Icon(Icons.Default.CloudUpload, null) }
             }
         }
+
+        if (!showLogs) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                placeholder = { Text("Search Lecturer...") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                shape = RoundedCornerShape(12.dp),
+                singleLine = true
+            )
+        }
+
         Box(Modifier.weight(1f)) {
             if (showLogs) {
                 LazyColumn { items(auditLogs) { log -> ListItem(headlineContent = { Text("${log.user}: ${log.action}") }, supportingContent = { Text(log.details) }) } }
             } else {
                 when (val state = uiState) {
                     is UiState.Success -> {
-                        LazyColumn { items(state.data.filter { it.department == viewModel.userSettings.department }) { l -> ListItem(headlineContent = { Text("${l.title} ${l.name}", Modifier.clickable { selectedLecturerForDetails = l }) }, supportingContent = { Text(l.department.displayName) }, trailingContent = { IconButton(onClick = { viewModel.selectedLecturerForCalendar = l; onGoToCalendar() }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, null) } }) } }
+                        val filteredLecturers by remember(state.data, searchQuery) {
+                            derivedStateOf {
+                                state.data.filter { it.department == viewModel.userSettings.department }
+                                    .filter { it.name.contains(searchQuery, ignoreCase = true) }
+                            }
+                        }
+
+                        LazyColumn { items(filteredLecturers) { l -> 
+                            ListItem(
+                                leadingContent = { UserAvatar(name = l.name, size = 40.dp) },
+                                headlineContent = { Text("${l.title} ${l.name}", Modifier.clickable { selectedLecturerForDetails = l }) }, 
+                                supportingContent = { Text(l.department.displayName) }, 
+                                trailingContent = { IconButton(onClick = { viewModel.selectedLecturerForCalendar = l; onGoToCalendar() }) { Icon(Icons.AutoMirrored.Filled.ArrowForward, null) } }
+                            ) 
+                        } }
                     }
                     is UiState.Loading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
                     else -> Unit
@@ -364,7 +535,13 @@ fun DataScreen(viewModel: CourseViewModel, onGoToCalendar: () -> Unit) {
     if (selectedLecturerForDetails != null) {
         val l = selectedLecturerForDetails!!
         val lecturerCourses = courses.filter { it.lecturerName.contains(l.name) }
-        AlertDialog(onDismissRequest = { selectedLecturerForDetails = null }, title = { Text("${l.title} ${l.name}") }, text = {
+        AlertDialog(onDismissRequest = { selectedLecturerForDetails = null }, title = { 
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                UserAvatar(name = l.name, size = 32.dp)
+                Spacer(Modifier.width(12.dp))
+                Text("${l.title} ${l.name}")
+            }
+        }, text = {
             Column {
                 Text("Username: ${l.username}"); Text("Password Hash: ${l.password.take(15)}...")
                 Spacer(Modifier.height(8.dp))
@@ -457,18 +634,143 @@ fun CalendarScreen(viewModel: CourseViewModel) {
 }
 
 @Composable
-fun SettingsScreen(user: UserSettings, onSave: (UserSettings) -> Unit) {
+fun SettingsScreen(
+    user: UserSettings, 
+    isDarkMode: Boolean, 
+    onDarkModeToggle: (Boolean) -> Unit, 
+    onCheckAdminPassword: (Department, String) -> Boolean,
+    onUpdateAdminPassword: (Department, String) -> Unit,
+    onSave: (UserSettings) -> Unit
+) {
     var name by remember { mutableStateOf(user.name) }; var surname by remember { mutableStateOf(user.surname) }; var dept by remember { mutableStateOf(user.department ?: Department.COMPUTER_ENGINEERING) }
+    var isVerified by remember { mutableStateOf(user.department != null) }
+    var showAuthDialog by remember { mutableStateOf(false) }
+    var showChangePasswordDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
     val gradient = Brush.verticalGradient(listOf(MaterialTheme.colorScheme.primaryContainer, MaterialTheme.colorScheme.surface))
     Box(Modifier.fillMaxSize().background(gradient)) {
         Column(Modifier.padding(24.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Text("User Profile", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
             OutlinedTextField(name, { name = it }, label = { Text("First Name") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(surname, { surname = it }, label = { Text("Last Name") }, modifier = Modifier.fillMaxWidth())
+            
             Text("Department Selection", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold)
-            Department.entries.forEach { d -> Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { dept = d }) { RadioButton(dept == d, onClick = { dept = d }); Text(d.displayName) } }
-            Button(onClick = { onSave(user.copy(name = name, surname = surname, department = dept, isRegistered = true)) }, modifier = Modifier.fillMaxWidth()) { Text("Save & Continue") }
+            Department.entries.forEach { d -> 
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { 
+                    if (user.position == Position.ADMIN) {
+                        dept = d
+                        isVerified = false // Reset verification when department changes
+                    } else {
+                        dept = d
+                    }
+                }) { 
+                    RadioButton(dept == d, onClick = { 
+                        if (user.position == Position.ADMIN) {
+                            dept = d
+                            isVerified = false
+                        } else {
+                            dept = d
+                        }
+                    })
+                    Text(d.displayName) 
+                } 
+            }
+            
+            if (user.position == Position.ADMIN) {
+                if (!isVerified) {
+                    Button(onClick = { showAuthDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Verify Department Admin Password")
+                    }
+                } else {
+                    OutlinedButton(onClick = { showChangePasswordDialog = true }, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Lock, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Change Admin Password")
+                    }
+                }
+            }
+
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Dark Mode", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                    Text("Toggle dark or light theme", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                }
+                Switch(checked = isDarkMode, onCheckedChange = onDarkModeToggle)
+            }
+
+            Button(
+                onClick = { onSave(user.copy(name = name, surname = surname, department = dept, isRegistered = true)) }, 
+                modifier = Modifier.fillMaxWidth(),
+                enabled = user.position != Position.ADMIN || isVerified
+            ) { 
+                Text("Save & Continue") 
+            }
         }
+    }
+
+    if (showAuthDialog) {
+        var pass by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showAuthDialog = false },
+            title = { Text("Verify Admin Password for ${dept.displayName}") },
+            text = {
+                Column {
+                    Text("Enter password to manage this department.")
+                    OutlinedTextField(
+                        value = pass,
+                        onValueChange = { pass = it },
+                        label = { Text("Password") },
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (onCheckAdminPassword(dept, pass)) {
+                        isVerified = true
+                        showAuthDialog = false
+                    } else {
+                        Toast.makeText(context, "Incorrect Password", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Verify") }
+            },
+            dismissButton = { TextButton(onClick = { showAuthDialog = false }) { Text("Cancel") } }
+        )
+    }
+
+    if (showChangePasswordDialog) {
+        var newPass by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showChangePasswordDialog = false },
+            title = { Text("Update Password for ${dept.displayName}") },
+            text = {
+                OutlinedTextField(
+                    value = newPass,
+                    onValueChange = { newPass = it },
+                    label = { Text("New Admin Password") },
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newPass.length >= 4) {
+                        onUpdateAdminPassword(dept, newPass)
+                        showChangePasswordDialog = false
+                        Toast.makeText(context, "Password Updated", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Update") }
+            },
+            dismissButton = { TextButton(onClick = { showChangePasswordDialog = false }) { Text("Cancel") } }
+        )
     }
 }
 
